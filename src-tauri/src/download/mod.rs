@@ -131,6 +131,10 @@ impl DownloadManager {
             let _ = db
                 .mark_episode_downloaded(&comic_id, episode_order, total, &save_path)
                 .await;
+            // 无论本地文件日后是否删除，下载历史都保留这一章的记录。
+            let _ = db
+                .upsert_download_history(&comic_id, &comic_title, episode_order)
+                .await;
             let _ = db
                 .update_download_task(&task_id, downloaded, "completed", None)
                 .await;

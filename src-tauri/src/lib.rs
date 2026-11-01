@@ -61,6 +61,27 @@ pub fn run() {
 
             let download_manager = Arc::new(download::DownloadManager::new(3));
 
+            // 先把已完成章节回填进下载历史（含文件已被删除的），再核对磁盘清理书库。
+            {
+                let db = db.clone();
+                tauri::async_runtime::spawn(async move {
+                    match db.backfill_download_history().await {
+                        Ok(n) if n > 0 => {
+                            log::info!("Backfilled {n} episode records into download history")
+                        }
+                        Ok(_) => {}
+                        Err(e) => log::warn!("Download history backfill failed: {e}"),
+                    }
+                    match db.cleanup_missing_downloads().await {
+                        Ok(n) if n > 0 => {
+                            log::info!("Cleaned {n} episodes whose local files are gone")
+                        }
+                        Ok(_) => {}
+                        Err(e) => log::warn!("Library cleanup failed: {e}"),
+                    }
+                });
+            }
+
             app.manage(AppState {
                 client,
                 db,
@@ -95,6 +116,14 @@ pub fn run() {
             toggle_favourite,
             get_my_favourites,
             start_download,
+            get_downloaded_episode_orders,
+            get_download_history,
+            get_download_state_sets,
+            clear_finished_download_tasks,
+            get_history_episode_orders,
+            cleanup_library,
+            export_download_history,
+            import_download_history,
             get_download_queue,
             get_library,
             get_library_stats,

@@ -320,6 +320,160 @@ pub async fn get_my_favourites(
         .map_err(|e| e.to_string())
 }
 
+/// 已下载到本地的章节 order 列表（用于详情页标记与整本下载跳过已下载）。
+/// 查询前先核对磁盘，本地文件已删除的章节即时降级为未下载（下载历史保留）。
+#[tauri::command]
+pub async fn get_downloaded_episode_orders(
+    state: State<'_, AppState>,
+    comic_id: String,
+) -> Result<Vec<i64>, String> {
+    let _ = state.db.cleanup_missing_downloads_for_comic(&comic_id).await;
+    state
+        .db
+        .get_downloaded_episode_orders(&comic_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 核对磁盘并清理书库中本地已删除的内容，返回被清理的章节数。下载历史不受影响。
+#[tauri::command]
+pub async fn cleanup_library(state: State<'_, AppState>) -> Result<usize, String> {
+    state
+        .db
+        .cleanup_missing_downloads()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Serialize)]
+pub struct DownloadStateSets {
+    /// 下载历史里出现过的漫画 ID（含本地文件已删除的）。
+    pub history: Vec<String>,
+    /// 当前本地仍有已下载章节的漫画 ID。
+    pub local: Vec<String>,
+}
+
+/// 卡片级下载状态：一次返回历史/本地两个 ID 集合，供列表页批量判断。
+#[tauri::command]
+pub async fn get_download_state_sets(
+    state: State<'_, AppState>,
+) -> Result<DownloadStateSets, String> {
+    let (history, local) = state
+        .db
+        .get_download_state_sets()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(DownloadStateSets { history, local })
+}
+
+/// 清理下载页里已结束（完成/失败）的任务记录，返回清理条数；书库与下载历史不受影响。
+#[tauri::command]
+pub async fn clear_finished_download_tasks(state: State<'_, AppState>) -> Result<usize, String> {
+    state
+        .db
+        .clear_finished_download_tasks()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 下载历史（含本地文件已删除的记录）。
+#[tauri::command]
+pub async fn get_download_history(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::api::DownloadHistoryEntry>, String> {
+    state
+        .db
+        .get_download_history()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_history_episode_orders(
+    state: State<'_, AppState>,
+    comic_id: String,
+) -> Result<Vec<i64>, String> {
+    state
+        .db
+        .get_history_episode_orders(&comic_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 导出下载历史到 JSON 文件；用户取消时返回 None。
+#[tauri::command]
+pub async fn export_download_history(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let entries = state
+        .db
+        .get_download_history()
+        .await
+        .map_err(|e| e.to_string())?;
+    let export = crate::api::DownloadHistoryExport {
+        version: 1,
+        exported_at: chrono::Utc::now().to_rfc3339(),
+        comics: entries,
+    };
+    let payload = serde_json::to_vec_pretty(&export).map_err(|e| e.to_string())?;
+
+    let file = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_file_name("pika-download-history.json")
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(path) = file else {
+        return Ok(None);
+    };
+    let path = path
+        .into_path()
+        .map_err(|e| e.to_string())?
+        .with_extension("json");
+    std::fs::write(&path, payload).map_err(|e| e.to_string())?;
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
+/// 从 JSON 文件导入下载历史并合并；返回导入的漫画数，取消时返回 None。
+#[tauri::command]
+pub async fn import_download_history(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let file = tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_dialog::DialogExt;
+        app.dialog().file().blocking_pick_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(path) = file else {
+        return Ok(None);
+    };
+    let path = path.into_path().map_err(|e| e.to_string())?;
+    let raw = std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败：{}", e))?;
+    let import: crate::api::DownloadHistoryExport =
+        serde_json::from_str(&raw).map_err(|e| format!("文件格式不正确：{}", e))?;
+    if import.version != 1 {
+        return Err(format!("不支持的记录版本：{}", import.version));
+    }
+    let comics: Vec<crate::api::DownloadHistoryEntry> = import
+        .comics
+        .into_iter()
+        .filter(|e| !e.comic_id.trim().is_empty() && !e.title.trim().is_empty())
+        .collect();
+    let count = comics.len();
+    state
+        .db
+        .merge_download_history(&comics)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(Some(format!("已导入 {} 部漫画的下载记录", count)))
+}
+
 #[tauri::command]
 pub async fn start_download(
     state: State<'_, AppState>,

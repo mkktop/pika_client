@@ -186,6 +186,8 @@ pub struct Comic {
     #[serde(default)]
     pub updated_at: Option<String>,
     #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
     pub description: Option<String>,
     #[serde(default, rename = "chineseTeam")]
     pub chinese_team: Option<String>,
@@ -329,6 +331,8 @@ pub struct ComicDetail {
     #[serde(default)]
     pub updated_at: Option<String>,
     #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
     pub description: Option<String>,
     #[serde(default, rename = "chineseTeam")]
     pub chinese_team: Option<String>,
@@ -418,6 +422,26 @@ pub struct LocalComic {
     pub update_time: Option<String>,
     pub downloaded_episodes: Option<Vec<String>>,
     pub cover_path: Option<String>,
+}
+
+/// 下载历史条目：独立于本地文件状态，删除文件/清理书库后依然保留。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DownloadHistoryEntry {
+    pub comic_id: String,
+    pub title: String,
+    pub episode_orders: Vec<i64>,
+    #[serde(default)]
+    pub first_downloaded_at: Option<String>,
+    #[serde(default)]
+    pub last_downloaded_at: Option<String>,
+}
+
+/// 导出文件的顶层结构，version 供未来格式演进。
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DownloadHistoryExport {
+    pub version: u32,
+    pub exported_at: String,
+    pub comics: Vec<DownloadHistoryEntry>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

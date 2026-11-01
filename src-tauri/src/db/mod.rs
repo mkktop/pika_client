@@ -3,6 +3,20 @@ use sqlx::Row;
 use std::path::Path;
 use std::str::FromStr;
 
+fn earliest(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(if y < x { y } else { x }),
+        (x, y) => x.or(y),
+    }
+}
+
+fn latest(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(if y > x { y } else { x }),
+        (x, y) => x.or(y),
+    }
+}
+
 pub struct Database {
     pool: SqlitePool,
 }
@@ -98,6 +112,21 @@ impl Database {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
                 updated_at TEXT DEFAULT (datetime('now'))
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // 下载历史与本地文件/书库状态解耦：文件删除或书库清理后记录依然保留。
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS download_history (
+                comic_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                episode_orders TEXT NOT NULL DEFAULT '[]',
+                first_downloaded_at TEXT,
+                last_downloaded_at TEXT
             )
             "#,
         )
@@ -306,6 +335,239 @@ impl Database {
         Ok(rows.iter().map(|r| r.get("title")).collect())
     }
 
+    pub async fn get_downloaded_episode_orders(
+        &self,
+        comic_id: &str,
+    ) -> Result<Vec<i64>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT episode_order FROM episodes WHERE comic_id = ? AND downloaded = 1 ORDER BY episode_order",
+        )
+        .bind(comic_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(|r| r.get("episode_order")).collect())
+    }
+
+    /// 整章下载完成时记录历史；重复章节幂等，first_downloaded_at 保持首次时间。
+    pub async fn upsert_download_history(
+        &self,
+        comic_id: &str,
+        title: &str,
+        episode_order: i64,
+    ) -> Result<(), sqlx::Error> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let existing: Option<(String, Option<String>)> = sqlx::query_as(
+            "SELECT episode_orders, first_downloaded_at FROM download_history WHERE comic_id = ?",
+        )
+        .bind(comic_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let (orders_json, first_at) = match existing {
+            Some((raw_orders, first)) => {
+                let mut orders: Vec<i64> = serde_json::from_str(&raw_orders).unwrap_or_default();
+                if !orders.contains(&episode_order) {
+                    orders.push(episode_order);
+                    orders.sort_unstable();
+                }
+                (
+                    serde_json::to_string(&orders).unwrap_or_else(|_| "[]".into()),
+                    first,
+                )
+            }
+            None => (
+                serde_json::to_string(&[episode_order]).unwrap_or_else(|_| "[]".into()),
+                None,
+            ),
+        };
+        let first = first_at.unwrap_or_else(|| now.clone());
+
+        sqlx::query(
+            "INSERT INTO download_history (comic_id, title, episode_orders, first_downloaded_at, last_downloaded_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(comic_id) DO UPDATE SET
+                title = excluded.title,
+                episode_orders = excluded.episode_orders,
+                last_downloaded_at = excluded.last_downloaded_at",
+        )
+        .bind(comic_id)
+        .bind(title)
+        .bind(orders_json)
+        .bind(first)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_download_history(
+        &self,
+    ) -> Result<Vec<crate::api::DownloadHistoryEntry>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT comic_id, title, episode_orders, first_downloaded_at, last_downloaded_at
+             FROM download_history ORDER BY last_downloaded_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| crate::api::DownloadHistoryEntry {
+                comic_id: r.get("comic_id"),
+                title: r.get("title"),
+                episode_orders: {
+                    let raw: String = r.get("episode_orders");
+                    serde_json::from_str(&raw).unwrap_or_default()
+                },
+                first_downloaded_at: r.get("first_downloaded_at"),
+                last_downloaded_at: r.get("last_downloaded_at"),
+            })
+            .collect())
+    }
+
+    pub async fn get_history_episode_orders(
+        &self,
+        comic_id: &str,
+    ) -> Result<Vec<i64>, sqlx::Error> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT episode_orders FROM download_history WHERE comic_id = ?")
+                .bind(comic_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row
+            .map(|(raw,)| serde_json::from_str(&raw).unwrap_or_default())
+            .unwrap_or_default())
+    }
+
+    /// 把书库里已完成章节回填进下载历史（升级/首次启用历史时调用，幂等）。
+    /// 批量内存合并 + 单事务写入，几万章节也在秒级内完成。
+    pub async fn backfill_download_history(&self) -> Result<usize, sqlx::Error> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT e.comic_id, e.episode_order FROM episodes e
+             WHERE e.downloaded = 1 ORDER BY e.comic_id, e.episode_order",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut map: std::collections::HashMap<String, crate::api::DownloadHistoryEntry> = self
+            .get_download_history()
+            .await?
+            .into_iter()
+            .map(|e| (e.comic_id.clone(), e))
+            .collect();
+
+        // 只处理历史里缺的章节；标题从 comics 表取（下载任务写入过），取不到退回漫画 ID。
+        let mut backfilled = 0usize;
+        for (comic_id, order) in rows {
+            if !map.contains_key(&comic_id) {
+                let title: Option<(String,)> =
+                    sqlx::query_as("SELECT title FROM comics WHERE comic_id = ?")
+                        .bind(&comic_id)
+                        .fetch_optional(&self.pool)
+                        .await?;
+                map.insert(
+                    comic_id.clone(),
+                    crate::api::DownloadHistoryEntry {
+                        comic_id: comic_id.clone(),
+                        title: title.map(|(t,)| t).unwrap_or_else(|| comic_id.clone()),
+                        episode_orders: Vec::new(),
+                        first_downloaded_at: None,
+                        last_downloaded_at: None,
+                    },
+                );
+            }
+            let entry = map.get_mut(&comic_id).expect("just ensured present");
+            if entry.episode_orders.binary_search(&order).is_ok() {
+                continue;
+            }
+            entry.episode_orders.push(order);
+            backfilled += 1;
+        }
+        for entry in map.values_mut() {
+            entry.episode_orders.sort_unstable();
+        }
+
+        self.persist_history_batch(&map).await?;
+        Ok(backfilled)
+    }
+
+    /// 导入合并：按漫画取章节并集，时间取更早/更晚的极端值，标题保留现有记录。
+    /// 批量内存合并 + 单事务写入，几万条也在秒级内完成。
+    pub async fn merge_download_history(
+        &self,
+        entries: &[crate::api::DownloadHistoryEntry],
+    ) -> Result<usize, sqlx::Error> {
+        if entries.is_empty() {
+            return Ok(0);
+        }
+        let mut map: std::collections::HashMap<String, crate::api::DownloadHistoryEntry> = self
+            .get_download_history()
+            .await?
+            .into_iter()
+            .map(|e| (e.comic_id.clone(), e))
+            .collect();
+
+        for entry in entries {
+            match map.get_mut(&entry.comic_id) {
+                Some(current) => {
+                    for order in &entry.episode_orders {
+                        if !current.episode_orders.contains(order) {
+                            current.episode_orders.push(*order);
+                        }
+                    }
+                    current.first_downloaded_at = earliest(
+                        current.first_downloaded_at.take(),
+                        entry.first_downloaded_at.clone(),
+                    );
+                    current.last_downloaded_at = latest(
+                        current.last_downloaded_at.take(),
+                        entry.last_downloaded_at.clone(),
+                    );
+                }
+                None => {
+                    let mut incoming = entry.clone();
+                    incoming.episode_orders.sort_unstable();
+                    map.insert(entry.comic_id.clone(), incoming);
+                }
+            }
+        }
+
+        self.persist_history_batch(&map).await?;
+        Ok(entries.len())
+    }
+
+    /// 单事务批量写入历史（INSERT 冲突时不覆盖现有标题）。
+    async fn persist_history_batch(
+        &self,
+        map: &std::collections::HashMap<String, crate::api::DownloadHistoryEntry>,
+    ) -> Result<(), sqlx::Error> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        for entry in map.values() {
+            sqlx::query(
+                "INSERT INTO download_history (comic_id, title, episode_orders, first_downloaded_at, last_downloaded_at)
+                 VALUES (?, ?, ?, ?, ?)
+                 ON CONFLICT(comic_id) DO UPDATE SET
+                    episode_orders = excluded.episode_orders,
+                    first_downloaded_at = excluded.first_downloaded_at,
+                    last_downloaded_at = excluded.last_downloaded_at",
+            )
+            .bind(&entry.comic_id)
+            .bind(&entry.title)
+            .bind(
+                serde_json::to_string(&entry.episode_orders)
+                    .unwrap_or_else(|_| "[]".into()),
+            )
+            .bind(entry.first_downloaded_at.clone().unwrap_or_else(|| now.clone()))
+            .bind(entry.last_downloaded_at.clone().unwrap_or_else(|| now.clone()))
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn get_episodes(
         &self,
         comic_id: &str,
@@ -466,8 +728,132 @@ impl Database {
         Ok(())
     }
 
-    pub async fn get_stats(&self) -> Result<crate::api::LibraryStats, sqlx::Error> {
-        let comics = sqlx::query("SELECT COUNT(*) as count FROM comics")
+    /// 核对磁盘清理书库：save_path 目录已不存在的完成章节重置为未下载，
+    /// 已无任何已下载章节的漫画从书库移除。下载历史（download_history）不受影响。
+    pub async fn cleanup_missing_downloads(&self) -> Result<usize, sqlx::Error> {
+        let rows: Vec<(String, i64, Option<String>)> = sqlx::query_as(
+            "SELECT comic_id, episode_order, save_path FROM episodes WHERE downloaded = 1",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut cleaned = 0usize;
+        for (comic_id, order, save_path) in rows {
+            let missing = match &save_path {
+                Some(path) => {
+                    let dir = Path::new(path);
+                    // 目录不存在，或目录已被清空，都视为本地文件丢失。
+                    !dir.is_dir()
+                        || std::fs::read_dir(dir)
+                            .map(|mut entries| entries.next().is_none())
+                            .unwrap_or(true)
+                }
+                None => true,
+            };
+            if missing {
+                sqlx::query(
+                    "UPDATE episodes
+                     SET downloaded = 0, downloaded_images = 0, image_count = 0, save_path = NULL
+                     WHERE comic_id = ? AND episode_order = ?",
+                )
+                .bind(&comic_id)
+                .bind(order)
+                .execute(&self.pool)
+                .await?;
+                cleaned += 1;
+            }
+        }
+
+        sqlx::query(
+            "DELETE FROM comics WHERE comic_id NOT IN
+             (SELECT DISTINCT comic_id FROM episodes WHERE downloaded = 1)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(cleaned)
+    }
+
+    /// 单漫画版磁盘核对：进详情页时调用，让“已下载”状态即时反映磁盘真实情况。
+    pub async fn cleanup_missing_downloads_for_comic(
+        &self,
+        comic_id: &str,
+    ) -> Result<usize, sqlx::Error> {
+        let rows: Vec<(i64, Option<String>)> = sqlx::query_as(
+            "SELECT episode_order, save_path FROM episodes
+             WHERE comic_id = ? AND downloaded = 1",
+        )
+        .bind(comic_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut cleaned = 0usize;
+        for (order, save_path) in rows {
+            let missing = match &save_path {
+                Some(path) => {
+                    let dir = Path::new(path);
+                    !dir.is_dir()
+                        || std::fs::read_dir(dir)
+                            .map(|mut entries| entries.next().is_none())
+                            .unwrap_or(true)
+                }
+                None => true,
+            };
+            if missing {
+                sqlx::query(
+                    "UPDATE episodes
+                     SET downloaded = 0, downloaded_images = 0, image_count = 0, save_path = NULL
+                     WHERE comic_id = ? AND episode_order = ?",
+                )
+                .bind(comic_id)
+                .bind(order)
+                .execute(&self.pool)
+                .await?;
+                cleaned += 1;
+            }
+        }
+
+        sqlx::query(
+            "DELETE FROM comics WHERE comic_id = ? AND comic_id NOT IN
+             (SELECT DISTINCT comic_id FROM episodes WHERE downloaded = 1)",
+        )
+        .bind(comic_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(cleaned)
+    }
+
+    /// 清理下载页的任务记录（completed/failed）。
+    /// 只动 download_queue 表，不影响本地文件、书库与下载历史。
+    pub async fn clear_finished_download_tasks(&self) -> Result<usize, sqlx::Error> {
+        let result =
+            sqlx::query("DELETE FROM download_queue WHERE status IN ('completed', 'failed')")
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected() as usize)
+    }
+
+    /// 卡片级下载状态：历史里出现过的漫画 ID + 本地仍有文件的漫画 ID。
+    pub async fn get_download_state_sets(&self) -> Result<(Vec<String>, Vec<String>), sqlx::Error> {
+        let history = sqlx::query_as::<_, (String,)>("SELECT comic_id FROM download_history")
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(|(id,)| id)
+            .collect();
+        let local = sqlx::query_as::<_, (String,)>(
+            "SELECT DISTINCT comic_id FROM episodes WHERE downloaded = 1",
+        )
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(|(id,)| id)
+        .collect();
+        Ok((history, local))
+    }
+
+    pub async fn get_stats(&self) -> Result<crate::api::LibraryStats, sqlx::Error> {        let comics = sqlx::query("SELECT COUNT(*) as count FROM comics")
             .fetch_one(&self.pool)
             .await?
             .get::<i64, _>("count");
@@ -505,5 +891,124 @@ fn row_to_task(r: &sqlx::sqlite::SqliteRow) -> crate::api::DownloadTask {
         downloaded_images: r.get("downloaded_images"),
         save_path: r.get::<Option<String>, _>("save_path").unwrap_or_default(),
         created_at: r.get("created_at"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Database;
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pika-db-test-{}-{}",
+            tag,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 删掉本地文件后：章节降级为未下载、漫画移出书库，但下载历史保留。
+    #[tokio::test]
+    async fn cleanup_keeps_history_after_local_files_deleted() {
+        let root = temp_dir("history");
+        let db = Database::new(&root.join("test.db").to_string_lossy()).await.unwrap();
+        let ep_dir = root.join("images");
+        std::fs::create_dir_all(&ep_dir).unwrap();
+        std::fs::write(ep_dir.join("0001.jpg"), b"fake").unwrap();
+
+        sqlx::query("INSERT INTO comics (comic_id, title) VALUES ('c1', '测试漫画')")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO episodes (comic_id, episode_order, title, downloaded, image_count, save_path)
+             VALUES ('c1', 1, '第 1 话', 1, 10, ?)",
+        )
+        .bind(ep_dir.to_string_lossy().to_string())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        db.upsert_download_history("c1", "测试漫画", 1).await.unwrap();
+
+        // 文件还在时清理不应改动任何状态。
+        let cleaned = db.cleanup_missing_downloads_for_comic("c1").await.unwrap();
+        assert_eq!(cleaned, 0);
+        assert_eq!(
+            db.get_downloaded_episode_orders("c1").await.unwrap(),
+            vec![1]
+        );
+
+        // 删光本地文件后：章节降级、书库移除，历史保留。
+        std::fs::remove_dir_all(&ep_dir).unwrap();
+        let cleaned = db.cleanup_missing_downloads_for_comic("c1").await.unwrap();
+        assert_eq!(cleaned, 1);
+        assert!(db.get_downloaded_episode_orders("c1").await.unwrap().is_empty());
+        let comics: Vec<(String,)> =
+            sqlx::query_as("SELECT comic_id FROM comics").fetch_all(&db.pool).await.unwrap();
+        assert!(comics.is_empty());
+        assert_eq!(
+            db.get_history_episode_orders("c1").await.unwrap(),
+            vec![1],
+            "download history must survive local file deletion"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 批量导入：几千部漫画、万级章节在单事务内合并，结果正确且不超时。
+    #[tokio::test]
+    async fn merge_download_history_handles_thousands_of_entries() {
+        let root = temp_dir("bulk");
+        let db = Database::new(&root.join("test.db").to_string_lossy()).await.unwrap();
+
+        // 预置 1000 部已有记录（各 10 话）。
+        let existing: Vec<crate::api::DownloadHistoryEntry> = (0..1000)
+            .map(|i| crate::api::DownloadHistoryEntry {
+                comic_id: format!("comic-{i}"),
+                title: format!("旧标题 {i}"),
+                episode_orders: (1..=10).collect(),
+                first_downloaded_at: Some("2020-01-01".into()),
+                last_downloaded_at: Some("2020-06-01".into()),
+            })
+            .collect();
+        db.merge_download_history(&existing).await.unwrap();
+
+        // 导入 2000 部：前 1000 部与现有重叠（各多 5 话 + 更晚时间），后 1000 部全新。
+        let incoming: Vec<crate::api::DownloadHistoryEntry> = (0..2000)
+            .map(|i| crate::api::DownloadHistoryEntry {
+                comic_id: format!("comic-{i}"),
+                title: format!("新标题 {i}"),
+                episode_orders: (6..=20).collect(),
+                first_downloaded_at: Some("2021-01-01".into()),
+                last_downloaded_at: Some("2021-06-01".into()),
+            })
+            .collect();
+        let merged = db.merge_download_history(&incoming).await.unwrap();
+        assert_eq!(merged, 2000);
+
+        let history = db.get_download_history().await.unwrap();
+        assert_eq!(history.len(), 2000);
+        let first = history
+            .iter()
+            .find(|e| e.comic_id == "comic-0")
+            .expect("entry exists");
+        assert_eq!(first.episode_orders, (1..=20).collect::<Vec<_>>(), "union of orders");
+        assert_eq!(first.title, "旧标题 0", "existing title wins");
+        assert_eq!(
+            first.first_downloaded_at.as_deref(),
+            Some("2020-01-01"),
+            "earliest first time wins"
+        );
+        assert_eq!(
+            first.last_downloaded_at.as_deref(),
+            Some("2021-06-01"),
+            "latest last time wins"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }
