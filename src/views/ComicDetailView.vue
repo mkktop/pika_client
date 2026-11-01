@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core'
 import ComicCard from '../components/ComicCard.vue'
 import AppIcon from '../components/AppIcon.vue'
 import EmptyState from '../components/EmptyState.vue'
+import Paginator from '../components/Paginator.vue'
 import { readingProgress } from '../utils/readerPreferences'
 import { isSupportedCategory } from '../utils/categories'
 const route = useRoute()
@@ -21,6 +22,7 @@ const commentLoading = ref(false)
 const notice = ref('')
 const actionError = ref(false)
 const failedCover = ref(false)
+const commentsTop = ref<HTMLElement>()
 const reversed = ref(false)
 const episodes = computed(() => (reversed.value ? [...store.episodes].reverse() : store.episodes))
 const saved = readingProgress(comicId)
@@ -88,10 +90,11 @@ function goBack() {
   }
   router.replace({ name: 'home' })
 }
-async function moreComments() {
+async function goToCommentPage(page: number) {
   if (commentLoading.value) return
   commentLoading.value = true
-  await store.fetchComments(comicId, store.commentPage + 1)
+  commentsTop.value?.scrollIntoView({ behavior: 'instant', block: 'start' })
+  await store.fetchComments(comicId, page)
   commentLoading.value = false
 }
 const count = (n = 0) => (n >= 10000 ? (n / 10000).toFixed(1) + '万' : n.toLocaleString())
@@ -241,10 +244,14 @@ const count = (n = 0) => (n >= 10000 ? (n / 10000).toFixed(1) + '万' : n.toLoca
           />
         </div>
       </section>
-      <section class="detail-section">
+      <section ref="commentsTop" class="detail-section">
         <div class="section-heading">
           <h2>
-            评论区<small>{{ store.comments.length }} COMMENTS</small>
+            评论区<small
+              >{{ store.commentPages > 1
+                ? `第 ${store.commentPage} / ${store.commentPages} 页`
+                : `${store.comments.length} COMMENTS` }}</small
+            >
           </h2>
         </div>
         <div v-if="store.comments.length" class="comments-list">
@@ -272,11 +279,12 @@ const count = (n = 0) => (n >= 10000 ? (n / 10000).toFixed(1) + '万' : n.toLoca
           </article>
         </div>
         <EmptyState v-else title="暂无评论" description="暂时没有可展示的评论。" icon="message" />
-        <div v-if="store.commentPage < store.commentPages" class="load-more">
-          <button class="btn btn-secondary" :disabled="commentLoading" @click="moreComments">
-            {{ commentLoading ? '加载中…' : '查看更多评论' }}
-          </button>
-        </div>
+        <Paginator
+          :page="store.commentPage"
+          :pages="store.commentPages"
+          :loading="commentLoading"
+          @change="goToCommentPage"
+        />
       </section>
     </template>
   </div>

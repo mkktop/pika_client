@@ -23,10 +23,9 @@ export const useCategoryStore = defineStore('categories', {
     catalogRequestId: 0,
     comics: [] as Comic[],
     loading: false,
-    loadingMore: false,
     error: '',
     page: 0,
-    hasMore: false,
+    pages: 0,
     pagesByAlias: {} as Record<string, number>,
     requestId: 0
   }),
@@ -52,22 +51,19 @@ export const useCategoryStore = defineStore('categories', {
       this.requestId++
       this.comics = []
       this.loading = false
-      this.loadingMore = false
       this.error = ''
       this.page = 0
-      this.hasMore = false
+      this.pages = 0
       this.pagesByAlias = {}
     },
-    async fetchComics(aliases: string[], sort: string, append = false) {
-      if (!append) this.resetResults()
+    async fetchComics(aliases: string[], sort: string, page = 1) {
       if (!aliases.length || aliases.some((alias) => !isSupportedCategory(alias))) {
+        this.resetResults()
         this.error = '该分类不可用'
         return
       }
       const id = ++this.requestId
-      const page = append ? this.page + 1 : 1
       this.loading = true
-      this.loadingMore = append
       this.error = ''
       try {
         const remaining = aliases.filter(
@@ -81,18 +77,14 @@ export const useCategoryStore = defineStore('categories', {
         )
         if (id !== this.requestId) return
         for (const result of results) this.pagesByAlias[result.category] = result.data.pages
-        this.comics = mergeCategoryComics(
-          [...(append ? this.comics : []), ...results.flatMap((result) => result.data.docs)],
-          sort
-        )
+        this.comics = mergeCategoryComics(results.flatMap((result) => result.data.docs), sort)
         this.page = page
-        this.hasMore = aliases.some((alias) => page < (this.pagesByAlias[alias] || 0))
+        this.pages = Math.max(0, ...aliases.map((alias) => this.pagesByAlias[alias] || 0))
       } catch (e) {
         if (id === this.requestId) this.error = String(e)
       } finally {
         if (id === this.requestId) {
           this.loading = false
-          this.loadingMore = false
         }
       }
     }

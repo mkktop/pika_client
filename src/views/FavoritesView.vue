@@ -1,13 +1,19 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useComicStore } from '../stores/comic'
 import ComicCard from '../components/ComicCard.vue'
 import ComicSkeleton from '../components/ComicSkeleton.vue'
 import EmptyState from '../components/EmptyState.vue'
 import AppIcon from '../components/AppIcon.vue'
+import Paginator from '../components/Paginator.vue'
 const router = useRouter()
 const store = useComicStore()
+const resultsTop = ref<HTMLElement>()
+function goToPage(page: number) {
+  resultsTop.value?.scrollIntoView({ behavior: 'instant', block: 'start' })
+  store.fetchFavourites(page)
+}
 onMounted(() => store.fetchFavourites())
 </script>
 <template>
@@ -34,7 +40,7 @@ onMounted(() => store.fetchFavourites())
         </button>
       </div>
     </div>
-    <div class="collection-banner">
+    <div ref="resultsTop" class="collection-banner">
       <span class="collection-banner-icon"><AppIcon name="heart" :size="24" /></span>
       <div>
         <strong>我的收藏书架</strong>
@@ -68,22 +74,12 @@ onMounted(() => store.fetchFavourites())
           @click="router.push('/comic/' + comic._id)"
         />
       </div>
-      <div v-if="store.favouritePages > 1" class="pagination">
-        <button
-          class="btn btn-secondary"
-          :disabled="store.favouritePage <= 1 || store.loading"
-          @click="store.fetchFavourites(store.favouritePage - 1)"
-        >
-          上一页</button
-        ><span>{{ store.favouritePage }} / {{ store.favouritePages }}</span
-        ><button
-          class="btn btn-secondary"
-          :disabled="store.favouritePage >= store.favouritePages || store.loading"
-          @click="store.fetchFavourites(store.favouritePage + 1)"
-        >
-          下一页
-        </button>
-      </div></template
+      <Paginator
+        :page="store.favouritePage"
+        :pages="store.favouritePages"
+        :loading="store.loading"
+        @change="goToPage"
+      /></template
     >
   </div>
 </template>

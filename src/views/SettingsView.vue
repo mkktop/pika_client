@@ -25,6 +25,17 @@ onMounted(async () => {
   if (results[0].status === 'fulfilled') proxy.value = results[0].value || ''
   if (results[1].status === 'fulfilled') imageQuality.value = results[1].value
 })
+async function pickDir() {
+  if (saving.value) return
+  try {
+    const dir = await invoke<string | null>('pick_download_dir')
+    if (!dir) return
+    downloadDir.value = dir
+    await save('directory')
+  } catch (e) {
+    messages.value.directory = '选择目录失败：' + e
+  }
+}
 async function save(kind: string) {
   if (saving.value) return
   saving.value = kind
@@ -141,10 +152,20 @@ async function save(kind: string) {
               <p>设置漫画图片的保存位置</p>
             </div>
           </div>
-          <label class="form-field"
-            ><span class="eyebrow">存储位置</span
-            ><input v-model="downloadDir" class="input" placeholder="输入本地文件夹路径"
-          /></label>
+          <div class="form-field">
+            <span class="eyebrow">存储位置</span>
+            <div class="dir-field">
+              <input v-model="downloadDir" class="input" placeholder="输入本地文件夹路径" />
+              <button
+                class="btn btn-secondary dir-browse"
+                :disabled="!!saving"
+                title="打开系统目录选择框"
+                @click="pickDir"
+              >
+                <AppIcon name="folder" :size="14" />浏览…
+              </button>
+            </div>
+          </div>
           <p class="hint">新的下载任务会保存到此目录，已下载的文件保留在原位置。</p>
           <div class="setting-actions">
             <button

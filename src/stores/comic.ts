@@ -30,6 +30,12 @@ export interface Picture {
   media: { path: string; fileServer: string }
 }
 
+export interface PicturePage {
+  docs: Picture[]
+  total?: number
+  pages?: number
+}
+
 export interface CommentItem {
   _id: string
   content: string
@@ -58,19 +64,13 @@ export interface ProfileUser {
   avatar?: { path: string; fileServer: string }
 }
 
-export interface Collection {
-  _id: string
-  title: string
-  comics: Comic[]
-}
-
 export const useComicStore = defineStore('comic', {
   state: () => ({
     leaderboard: [] as Comic[],
     leaderboardPeriod: 'H24',
     latest: [] as Comic[],
     latestPage: 1,
-    latestHasMore: false,
+    latestPages: 1,
     favourites: [] as Comic[],
     favouriteSort: 'dd',
     favouritePage: 1,
@@ -78,15 +78,20 @@ export const useComicStore = defineStore('comic', {
     randomComics: [] as Comic[],
     recommendations: [] as Comic[],
     keywords: [] as string[],
-    collections: [] as Collection[],
     comments: [] as CommentItem[],
     commentPage: 1,
     commentPages: 1,
     searchResults: [] as Comic[],
-    searchHasMore: false,
+    searchPage: 1,
+    searchPages: 1,
     currentComic: null as Comic | null,
     episodes: [] as Episode[],
     pictures: [] as Picture[],
+    pictureTotal: 0,
+    picturePages: 0,
+    pictureCursor: 0,
+    fetchingPictures: false,
+    picturesError: null as string | null,
     profile: null as ProfileUser | null,
     loading: false,
     requestId: 0,
@@ -148,14 +153,6 @@ export const useComicStore = defineStore('comic', {
         this.keywords = []
       }
     },
-    async fetchCollections() {
-      await this.loadResource(
-        () => invoke<Collection[]>('get_collections'),
-        (data) => {
-          this.collections = data
-        }
-      )
-    },
     async fetchComments(comicId: string, page = 1) {
       const id = ++this.commentRequestId
       try {
@@ -164,7 +161,7 @@ export const useComicStore = defineStore('comic', {
           page
         })
         if (id !== this.commentRequestId) return
-        this.comments = page === 1 ? data.docs : this.comments.concat(data.docs)
+        this.comments = data.docs
         this.commentPage = page
         this.commentPages = data.pages
       } catch {
@@ -190,17 +187,9 @@ export const useComicStore = defineStore('comic', {
       await this.loadResource(
         () => invoke<{ docs: Comic[]; pages: number }>('get_latest_comics', { page }),
         (data) => {
-          this.latest =
-            page === 1
-              ? data.docs
-              : [
-                  ...this.latest,
-                  ...data.docs.filter(
-                    (comic) => !this.latest.some((existing) => existing._id === comic._id)
-                  )
-                ]
+          this.latest = data.docs
           this.latestPage = page
-          this.latestHasMore = page < data.pages
+          this.latestPages = data.pages || page
         }
       )
     },
@@ -227,16 +216,9 @@ export const useComicStore = defineStore('comic', {
             req: { keyword, page, sort }
           }),
         (data) => {
-          this.searchResults =
-            page === 1
-              ? data.docs
-              : [
-                  ...this.searchResults,
-                  ...data.docs.filter(
-                    (comic) => !this.searchResults.some((existing) => existing._id === comic._id)
-                  )
-                ]
-          this.searchHasMore = data.pages ? page < data.pages : data.docs.length > 0
+          this.searchResults = data.docs
+          this.searchPage = page
+          this.searchPages = data.pages || (data.docs.length ? page + 1 : page)
         }
       )
     },
@@ -258,13 +240,52 @@ export const useComicStore = defineStore('comic', {
       )
     },
     async fetchPictures(comicId: string, epOrder: number) {
+      const id = ++this.requestId
       this.pictures = []
-      await this.loadResource(
-        () => invoke<Picture[]>('get_pictures', { comicId, epOrder }),
-        (data) => {
-          this.pictures = data
+      this.pictureTotal = 0
+      this.picturePages = 0
+      this.pictureCursor = 0
+      this.fetchingPictures = false
+      this.picturesError = null
+      this.loading = true
+      this.error = null
+      try {
+        // 首批先上屏，后续 API 分页在后台继续追加，长章节不用等全量。
+        const first = await invoke<PicturePage>('get_pictures_page', { comicId, epOrder, page: 1 })
+        if (id !== this.requestId) return
+        this.pictures = first.docs
+        this.pictureTotal = first.total || first.docs.length
+        this.picturePages = Math.max(1, first.pages || 1)
+        this.pictureCursor = 1
+        this.loading = false
+        if (this.picturePages > 1) await this.continuePictures(comicId, epOrder)
+      } catch (e) {
+        if (id === this.requestId) {
+          this.error = String(e)
+          this.loading = false
         }
-      )
+      }
+    },
+    async continuePictures(comicId: string, epOrder: number) {
+      const id = this.requestId
+      if (this.fetchingPictures || this.pictureCursor >= this.picturePages) return
+      this.picturesError = null
+      this.fetchingPictures = true
+      try {
+        while (this.pictureCursor < this.picturePages) {
+          const page = this.pictureCursor + 1
+          const next = await invoke<PicturePage>('get_pictures_page', { comicId, epOrder, page })
+          if (id !== this.requestId) return
+          this.pictures = this.pictures.concat(next.docs)
+          this.pictureCursor = page
+        }
+        this.fetchingPictures = false
+      } catch (e) {
+        if (id === this.requestId) {
+          this.fetchingPictures = false
+          this.picturesError = String(e)
+        }
+      }
     },
     getImageUrl(pic: Picture | { media: { path: string; fileServer: string } }): string {
       const path = pic.media.path

@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref, computed } from 'vue'
+import { onMounted, ref, computed, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
 import EmptyState from '../components/EmptyState.vue'
+import Paginator from '../components/Paginator.vue'
 interface LocalComic {
   comic_id: string
   title: string
@@ -14,39 +15,50 @@ interface LocalComic {
   downloaded_episodes?: string[]
   cover_path?: string
 }
+const PAGE_SIZE = 60
 const router = useRouter()
 const comics = ref<LocalComic[]>([])
 const stats = ref({ total_comics: 0, total_episodes: 0, total_images: 0 })
 const loading = ref(false)
 const error = ref('')
 const query = ref('')
-const offset = ref(0)
-const more = ref(false)
+const page = ref(1)
 const failedCovers = ref(new Set<string>())
+const resultsTop = ref<HTMLElement>()
 const filtered = computed(() =>
   comics.value.filter((c) =>
     (c.title + ' ' + (c.author || '')).toLowerCase().includes(query.value.toLowerCase())
   )
 )
-async function loadLibrary(append = false) {
+const pages = computed(() => Math.max(1, Math.ceil(filtered.value.length / PAGE_SIZE)))
+const paged = computed(() =>
+  filtered.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE)
+)
+watch(query, () => {
+  page.value = 1
+})
+async function loadLibrary() {
   if (loading.value) return
   loading.value = true
   error.value = ''
   try {
-    const nextOffset = append ? offset.value + 100 : 0
+    // 本地元数据体量很小，整表读取后在前端分页，搜索也能覆盖整个书库。
     const [items, counts] = await Promise.all([
-      invoke<LocalComic[]>('get_library', { limit: 100, offset: nextOffset }),
+      invoke<LocalComic[]>('get_library', { limit: 100000, offset: 0 }),
       invoke<typeof stats.value>('get_library_stats')
     ])
-    comics.value = append ? [...comics.value, ...items] : items
+    comics.value = items
     stats.value = counts
-    offset.value = nextOffset
-    more.value = items.length === 100
+    page.value = 1
   } catch (e) {
     error.value = String(e)
   } finally {
     loading.value = false
   }
+}
+function goToPage(target: number) {
+  page.value = target
+  resultsTop.value?.scrollIntoView({ behavior: 'instant', block: 'start' })
 }
 onMounted(() => loadLibrary())
 </script>
@@ -85,13 +97,15 @@ onMounted(() => loadLibrary())
         </div>
       </div>
     </div>
-    <div v-if="comics.length" class="library-toolbar">
+    <div v-if="comics.length" ref="resultsTop" class="library-toolbar">
       <input
         v-model="query"
         class="input"
-        placeholder="在已加载的书库中搜索…"
+        placeholder="在本地书库中搜索…"
         aria-label="搜索本地书库"
-      /><span class="header-note">{{ filtered.length }} 部作品</span>
+      /><span class="header-note"
+        >{{ filtered.length }} 部作品<span v-if="pages > 1"> · {{ pages }} 页</span></span
+      >
     </div>
     <div v-if="loading && !comics.length" class="loading">
       <span class="spinner" />正在整理你的书架…
@@ -113,7 +127,7 @@ onMounted(() => loadLibrary())
     />
     <div v-else class="library-grid">
       <button
-        v-for="comic in filtered"
+        v-for="comic in paged"
         :key="comic.comic_id"
         class="local-comic"
         @click="router.push('/comic/' + comic.comic_id)"
@@ -136,10 +150,12 @@ onMounted(() => loadLibrary())
         >
       </button>
     </div>
-    <div v-if="more" class="load-more">
-      <button class="btn btn-secondary" :disabled="loading" @click="loadLibrary(true)">
-        {{ loading ? '加载中…' : '加载更多漫画' }}
-      </button>
-    </div>
+    <Paginator
+      v-if="!error && filtered.length"
+      :page="page"
+      :pages="pages"
+      :loading="loading"
+      @change="goToPage"
+    />
   </div>
 </template>

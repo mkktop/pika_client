@@ -6,6 +6,7 @@ import ComicCard from '../components/ComicCard.vue'
 import ComicSkeleton from '../components/ComicSkeleton.vue'
 import EmptyState from '../components/EmptyState.vue'
 import AppIcon from '../components/AppIcon.vue'
+import Paginator from '../components/Paginator.vue'
 const route = useRoute()
 const router = useRouter()
 const store = useComicStore()
@@ -14,6 +15,7 @@ const sort = ref('dd')
 const page = ref(1)
 const searched = ref(false)
 const submittedKeyword = ref('')
+const resultsTop = ref<HTMLElement>()
 const sortOptions = [
   { value: 'dd', label: '最新更新' },
   { value: 'da', label: '最早发布' },
@@ -27,11 +29,14 @@ async function doSearch() {
   page.value = 1
   await store.search(keyword.value.trim(), 1, sort.value)
 }
-async function loadMore() {
+async function goToPage(target: number) {
   if (store.loading) return
-  const next = page.value + 1
-  await store.search(submittedKeyword.value, next, sort.value)
-  if (!store.error) page.value = next
+  page.value = target
+  resultsTop.value?.scrollIntoView({ behavior: 'instant', block: 'start' })
+  await store.search(submittedKeyword.value, target, sort.value)
+}
+function retry() {
+  store.search(submittedKeyword.value, page.value, sort.value)
 }
 function chooseKeyword(kw: string) {
   keyword.value = kw
@@ -107,19 +112,21 @@ onMounted(() => {
         {{ kw }}
       </button>
     </div>
-    <div v-if="searched" class="section-heading search-results-heading">
+    <div v-if="searched" ref="resultsTop" class="section-heading search-results-heading">
       <h2>
-        搜索结果<small v-if="!store.loading">{{ store.searchResults.length }} 部作品</small>
+        搜索结果<small v-if="!store.loading && store.searchPages > 1"
+          >第 {{ store.searchPage }} / {{ store.searchPages }} 页</small
+        >
       </h2>
       <span class="header-note">按所选方式排序</span>
     </div>
-    <ComicSkeleton v-if="store.loading && page === 1 && !store.searchResults.length" />
+    <ComicSkeleton v-if="store.loading && !store.searchResults.length" />
     <EmptyState
       v-else-if="store.error"
       title="搜索暂时遇到了一点问题"
       :description="store.error"
       error
-      ><button class="btn btn-primary" @click="doSearch">重新搜索</button></EmptyState
+      ><button class="btn btn-primary" @click="retry">重新搜索</button></EmptyState
     >
     <template v-else-if="store.searchResults.length"
       ><div class="comic-grid">
@@ -130,18 +137,13 @@ onMounted(() => {
           @click="router.push('/comic/' + comic._id)"
         />
       </div>
-      <div class="load-more">
-        <button
-          v-if="store.searchHasMore"
-          class="btn btn-secondary"
-          :disabled="store.loading"
-          @click="loadMore"
-        >
-          {{ store.loading ? '正在加载更多…' : '加载更多作品'
-          }}<AppIcon name="chevron-right" :size="14" /></button
-        ><span v-else>已经看到全部结果了</span>
-      </div></template
-    >
+      <Paginator
+        :page="store.searchPage"
+        :pages="store.searchPages"
+        :loading="store.loading"
+        @change="goToPage"
+      />
+    </template>
     <EmptyState
       v-else-if="searched"
       title="没有找到相关漫画"

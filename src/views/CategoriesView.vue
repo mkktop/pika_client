@@ -12,11 +12,13 @@ import AppIcon from '../components/AppIcon.vue'
 import ComicCard from '../components/ComicCard.vue'
 import ComicSkeleton from '../components/ComicSkeleton.vue'
 import EmptyState from '../components/EmptyState.vue'
+import Paginator from '../components/Paginator.vue'
 
 const store = useCategoryStore()
 const route = useRoute()
 const router = useRouter()
 const filter = ref('')
+const resultsTop = ref<HTMLElement>()
 const selected = computed(() =>
   typeof route.query.category === 'string' ? route.query.category.trim() : ''
 )
@@ -62,11 +64,15 @@ function changeSort(event: Event) {
     query: { ...route.query, sort: (event.target as HTMLSelectElement).value }
   })
 }
-function loadMore() {
-  if (current.value && !store.loading) store.fetchComics(current.value.aliases, sort.value, true)
+function goToPage(page: number) {
+  if (!current.value || store.loading) return
+  resultsTop.value?.scrollIntoView({ behavior: 'instant', block: 'start' })
+  store.fetchComics(current.value.aliases, sort.value, page)
 }
 function retry() {
-  if (current.value) store.fetchComics(current.value.aliases, sort.value, store.page > 0)
+  if (current.value) {
+    store.fetchComics(current.value.aliases, sort.value, store.comics.length ? store.page + 1 : 1)
+  }
 }
 watch(
   [() => store.catalogLoaded, () => current.value?.aliases.join('\0'), sort],
@@ -153,10 +159,13 @@ onUnmounted(() => store.resetResults())
       ><button class="btn btn-secondary" @click="choose()">查看其他分类</button></EmptyState
     >
     <template v-else-if="current && store.catalogLoaded && !store.catalogError">
-      <div class="section-heading category-results-heading">
+      <div ref="resultsTop" class="section-heading category-results-heading">
         <div>
           <h2>
-            {{ current.title }}<small>{{ store.comics.length }} 部已加载</small>
+            {{ current.title
+            }}<small v-if="!store.loading && store.pages > 1"
+              >第 {{ store.page }} / {{ store.pages }} 页</small
+            >
           </h2>
           <p v-if="current.aliases.length > 1" class="category-aliases">
             已合并简繁分类：{{ current.aliases.join(' / ') }}
@@ -176,14 +185,14 @@ onUnmounted(() => store.resetResults())
           </select>
         </div>
       </div>
-      <ComicSkeleton v-if="store.loading && !store.loadingMore" />
+      <ComicSkeleton v-if="store.loading && !store.comics.length" />
       <template v-else>
         <div
           v-if="store.error && store.comics.length"
           role="alert"
           class="notice error category-load-error"
         >
-          {{ store.error }}<button class="text-btn" @click="retry">重试加载更多</button>
+          {{ store.error }}<button class="text-btn" @click="retry">重试本页</button>
         </div>
         <EmptyState
           v-if="store.error && !store.comics.length"
@@ -211,17 +220,13 @@ onUnmounted(() => store.resetResults())
             >关键词搜索</router-link
           ></EmptyState
         >
-        <div v-if="!store.error" class="load-more">
-          <button
-            v-if="store.hasMore"
-            class="btn btn-secondary"
-            :disabled="store.loading"
-            @click="loadMore"
-          >
-            {{ store.loadingMore ? '加载中…' : '加载更多漫画'
-            }}<AppIcon name="chevron-right" :size="14" /></button
-          ><span v-else-if="store.comics.length">已经看到这个分类的全部结果了</span>
-        </div>
+        <Paginator
+          v-if="!store.error"
+          :page="store.page"
+          :pages="store.pages"
+          :loading="store.loading"
+          @change="goToPage"
+        />
       </template>
     </template>
   </div>

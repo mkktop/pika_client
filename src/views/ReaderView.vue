@@ -21,7 +21,11 @@ const zen = ref(false)
 const scrollContainer = ref<HTMLElement>()
 const pictures = computed(() => store.pictures)
 const currentPic = computed(() => pictures.value[currentIndex.value])
+const total = computed(() => Math.max(store.pictureTotal, pictures.value.length))
+const pendingRestore = ref(-1)
 const failed = ref(new Set<string>())
+const preloaded = new Set<string>()
+const preloadPool: HTMLImageElement[] = []
 const title = computed(() =>
   store.currentComic?._id === comicId ? store.currentComic.title : '沉浸阅读'
 )
@@ -49,15 +53,16 @@ watch(width, (w) => writePreference('pika-reader-width', w))
 async function load() {
   await store.fetchPictures(comicId, epOrder)
   if (!active) return
-  currentIndex.value = Math.max(
-    0,
-    Math.min(saved?.episode === epOrder ? saved.page : 0, pictures.value.length - 1)
-  )
+  const target = saved?.episode === epOrder ? saved.page : 0
+  currentIndex.value = Math.max(0, Math.min(target, pictures.value.length - 1))
+  // 渐进加载下，恢复点可能还没到：等图片追加到位后再跳。
+  if (target > currentIndex.value) pendingRestore.value = target
   await nextTick()
   if (mode.value === 'scroll') {
     observePages()
     goTo(currentIndex.value)
   }
+  preloadAhead()
 }
 function observePages() {
   observer?.disconnect()
@@ -119,6 +124,37 @@ function back() {
 function retry(id: string) {
   failed.value.delete(id)
 }
+// 预取当前页之后的图片，翻页时不用现等下载。
+function preloadAhead() {
+  for (let i = currentIndex.value + 1; i <= currentIndex.value + 2; i++) {
+    const pic = pictures.value[i]
+    if (!pic) continue
+    const url = store.getImageUrl(pic)
+    if (url && !preloaded.has(url)) {
+      preloaded.add(url)
+      const img = new Image()
+      img.src = url
+      preloadPool.push(img)
+    }
+  }
+}
+watch(currentIndex, preloadAhead)
+// 后续分页追加后：滚动模式重新挂载观察器，并处理尚未到位的恢复点。
+watch(
+  () => pictures.value.length,
+  async () => {
+    if (!active) return
+    if (pendingRestore.value >= 0 && pictures.value.length > pendingRestore.value) {
+      const target = pendingRestore.value
+      pendingRestore.value = -1
+      await nextTick()
+      goTo(target)
+    }
+    await nextTick()
+    if (mode.value === 'scroll') observePages()
+    preloadAhead()
+  }
+)
 onMounted(() => {
   load()
   window.addEventListener('keydown', handleKey)
@@ -199,9 +235,20 @@ onUnmounted(() => {
               重新加载图片
             </button>
           </div>
-          <span class="page-number">{{ idx + 1 }} / {{ pictures.length }}</span>
+          <span class="page-number">{{ idx + 1 }} / {{ total }}</span>
         </div>
         <div class="load-more">
+          <div v-if="store.fetchingPictures" class="reader-fetching">
+            <span class="spinner" />正在加载本章剩余页面…
+          </div>
+          <div v-else-if="store.picturesError" role="alert" class="notice error reader-fetch-error">
+            后续页面加载失败：{{ store.picturesError }}<button
+              class="text-btn"
+              @click="store.continuePictures(comicId, epOrder)"
+            >
+              重试
+            </button>
+          </div>
           <button
             v-if="nextEpisode"
             class="btn btn-secondary"
@@ -242,14 +289,31 @@ onUnmounted(() => {
           <AppIcon name="chevron-right" :size="25" />
         </button>
       </div>
+      <div
+        v-if="mode === 'page' && store.picturesError && !store.fetchingPictures"
+        role="alert"
+        class="notice error reader-fetch-error"
+      >
+        后续页面加载失败：{{ store.picturesError }}<button
+          class="text-btn"
+          @click="store.continuePictures(comicId, epOrder)"
+        >
+          重试
+        </button>
+      </div>
     </div>
     <footer class="reader-footer">
-      <span>{{ pictures.length ? currentIndex + 1 : 0 }} / {{ pictures.length }} 页</span
+      <span
+        >{{ pictures.length ? currentIndex + 1 : 0 }} / {{ total }} 页<span
+          v-if="store.fetchingPictures"
+          class="reader-footer-loading"
+          ><span class="spinner" />加载中</span
+        ></span
       ><input
         type="range"
         aria-label="跳转阅读页码"
         :min="0"
-        :max="Math.max(0, pictures.length - 1)"
+        :max="Math.max(0, total - 1)"
         :value="currentIndex"
         :disabled="!pictures.length"
         @input="goTo(Number(($event.target as HTMLInputElement).value))"

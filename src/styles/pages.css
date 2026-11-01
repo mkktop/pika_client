@@ -217,9 +217,6 @@
   align-items: center;
   gap: 10px;
 }
-.collection-section {
-  margin-bottom: 35px;
-}
 /* Welcome */
 .login-page {
   width: 100%;
@@ -814,6 +811,17 @@
 .setting-group .form-field {
   gap: 8px;
 }
+.dir-field {
+  display: flex;
+  gap: 10px;
+}
+.dir-field .input {
+  flex: 1;
+  min-width: 0;
+}
+.dir-browse {
+  flex-shrink: 0;
+}
 .hint {
   font-size: 10px;
   color: var(--text-secondary);
@@ -1221,6 +1229,31 @@
 }
 .reader-footer span {
   white-space: nowrap;
+}
+.reader-footer-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+  color: #7e8e80;
+}
+.reader-footer-loading .spinner {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
+}
+.reader-fetching {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 6px 0 18px;
+  font-size: 11px;
+  color: var(--text-muted, #7e8e80);
+}
+.reader-fetch-error {
+  margin: 0 auto 18px;
+  max-width: 640px;
 }
 .reader-view .empty-state {
   margin: 40px;
