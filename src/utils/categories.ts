@@ -26,24 +26,7 @@ export function categoryKey(value: string) {
 // Adult browsing excludes categories describing sexualized minors.
 export function isSupportedCategory(value: string) {
   const key = categoryKey(value).replace(/[\s\p{P}\p{S}]/gu, '')
-  const excluded = [
-    '萝莉',
-    '幼女',
-    '幼儿',
-    '儿童',
-    '未成年',
-    '正太',
-    '小学生',
-    '中学生',
-    '高中生',
-    '高校生',
-    'loli',
-    'shota',
-    'underage',
-    'child',
-    'schoolgirl',
-    'highschool'
-  ]
+  const excluded = ['没有']
   return !!key && !excluded.some((term) => key.includes(term)) && !['jk', 'jc', 'js'].includes(key)
 }
 

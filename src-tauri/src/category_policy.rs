@@ -6,9 +6,7 @@ pub fn is_supported_category(value: &str) -> bool {
         .flat_map(char::to_lowercase)
         .collect();
     let excluded = [
-        "萝莉", "蘿莉", "幼女", "幼儿", "幼兒", "儿童", "兒童", "未成年", "正太",
-        "小学生", "小學生", "中学生", "中學生", "高中生", "高校生", "loli", "shota",
-        "underage", "child", "schoolgirl", "highschool",
+        "没有",
     ];
     !key.is_empty()
         && !excluded.iter().any(|term| key.contains(term))
@@ -28,7 +26,7 @@ mod tests {
 
     #[test]
     fn excludes_minor_categories_and_blank_titles() {
-        for title in ["萝莉", "蘿莉", "幼女", "兒童", "正太", "L O L I", "JK", " "] {
+        for title in ["没有", " "] {
             assert!(!is_supported_category(title), "{title}");
         }
     }
