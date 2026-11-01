@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useCategoryStore } from '../stores/categories'
 import {
@@ -19,6 +19,8 @@ const route = useRoute()
 const router = useRouter()
 const filter = ref('')
 const resultsTop = ref<HTMLElement>()
+
+defineOptions({ name: 'CategoriesView' })
 const selected = computed(() =>
   typeof route.query.category === 'string' ? route.query.category.trim() : ''
 )
@@ -83,7 +85,6 @@ watch(
   { immediate: true }
 )
 onMounted(() => store.fetchCatalog())
-onUnmounted(() => store.resetResults())
 </script>
 
 <template>

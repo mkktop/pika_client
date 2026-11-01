@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, computed, ref, watch } from 'vue'
+import { onMounted, computed, ref, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from './stores/app'
 import { useComicStore } from './stores/comic'
@@ -36,12 +36,30 @@ const pageName = computed(
       'comic-detail': '漫画详情'
     })[String(route.name)] || '发现'
 )
+// 列表页用 keep-alive 缓存；离开时记录滚动位置，返回时恢复而不是重置。
+const LIST_VIEW_NAMES = new Set([
+  'home',
+  'categories',
+  'search',
+  'favorites',
+  'library',
+  'downloads'
+])
+const scrollPositions = new Map<string, number>()
 watch(
   () => route.fullPath,
-  () => {
+  async (_, from) => {
+    const fromName = String(router.resolve(from).name || '')
+    if (fromName && LIST_VIEW_NAMES.has(fromName)) {
+      scrollPositions.set(from, main.value?.scrollTop ?? 0)
+    }
     comicStore.cancelRequests()
-    main.value?.scrollTo({ top: 0, behavior: 'instant' })
+    comicStore.fetchDownloadStates()
     query.value = String(route.query.q || '')
+    await nextTick()
+    const isListView = LIST_VIEW_NAMES.has(String(route.name || ''))
+    const restore = isListView ? scrollPositions.get(route.fullPath) : undefined
+    main.value?.scrollTo({ top: restore ?? 0, behavior: 'instant' })
   }
 )
 function search() {
@@ -49,6 +67,7 @@ function search() {
 }
 onMounted(async () => {
   await appStore.checkLogin()
+  comicStore.fetchDownloadStates()
   ready.value = true
   if (appStore.isLoggedIn) await appStore.loadDownloadDir()
 })
@@ -104,7 +123,18 @@ onMounted(async () => {
         <main ref="main" class="main-content" :class="{ fullscreen: isReader }">
           <router-view v-slot="{ Component }"
             ><transition name="fade" mode="out-in"
-              ><component :is="Component" :key="route.path" /></transition
+              ><keep-alive
+                :include="[
+                  'HomeView',
+                  'CategoriesView',
+                  'SearchView',
+                  'FavoritesView',
+                  'LibraryView',
+                  'DownloadsView'
+                ]"
+                :max="12"
+                ><component :is="Component" :key="route.path" /></keep-alive
+              ></transition
           ></router-view>
         </main>
       </div>

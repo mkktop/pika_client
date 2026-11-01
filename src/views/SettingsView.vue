@@ -36,6 +36,34 @@ async function pickDir() {
     messages.value.directory = '选择目录失败：' + e
   }
 }
+async function exportHistory() {
+  if (saving.value) return
+  saving.value = 'history'
+  messages.value.history = ''
+  try {
+    const path = await invoke<string | null>('export_download_history')
+    messages.value.history = path
+      ? '已导出到 ' + path
+      : '已取消导出'
+  } catch (e) {
+    messages.value.history = '导出失败：' + e
+  } finally {
+    saving.value = ''
+  }
+}
+async function importHistory() {
+  if (saving.value) return
+  saving.value = 'history'
+  messages.value.history = ''
+  try {
+    const result = await invoke<string | null>('import_download_history')
+    messages.value.history = result || '已取消导入'
+  } catch (e) {
+    messages.value.history = '导入失败：' + e
+  } finally {
+    saving.value = ''
+  }
+}
 async function save(kind: string) {
   if (saving.value) return
   saving.value = kind
@@ -181,6 +209,30 @@ async function save(kind: string) {
               >{{ messages.directory }}</span
             >
           </div>
+        </section>
+        <section class="setting-group">
+          <div class="setting-title">
+            <AppIcon name="download" />
+            <div>
+              <h2>下载记录备份</h2>
+              <p>下载历史独立于本地文件，可导出保存，重装后导入恢复</p>
+            </div>
+          </div>
+          <div class="setting-actions">
+            <button class="btn btn-secondary btn-sm" :disabled="!!saving" @click="exportHistory">
+              {{ saving === 'history' ? '处理中…' : '导出记录' }}</button
+            ><button class="btn btn-secondary btn-sm" :disabled="!!saving" @click="importHistory">
+              导入记录</button
+            ><span
+              role="status"
+              class="setting-message"
+              :class="{ error: messages.history?.includes('失败') }"
+              >{{ messages.history }}</span
+            >
+          </div>
+          <p class="hint">
+            导出为 JSON 文件；导入时与现有记录合并（章节取并集），不会覆盖或删除已有记录。
+          </p>
         </section>
         <section class="setting-group">
           <div class="setting-title">

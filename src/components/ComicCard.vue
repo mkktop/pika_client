@@ -12,6 +12,12 @@ watch(thumbUrl, () => {
   failed.value = false
 })
 const count = (n: number) => (n >= 10000 ? (n / 10000).toFixed(1) + '万' : n.toLocaleString())
+const tags = computed(() => (props.comic.categories || []).slice(0, 2))
+const downloadState = computed<'local' | 'history' | undefined>(() => {
+  if (store.localIds.has(props.comic._id)) return 'local'
+  if (store.historyIds.has(props.comic._id)) return 'history'
+  return undefined
+})
 </script>
 <template>
   <button class="comic-card" @click="emit('click')" :aria-label="'查看 ' + comic.title">
@@ -33,6 +39,15 @@ const count = (n: number) => (n >= 10000 ? (n / 10000).toFixed(1) + '万' : n.to
     <span class="comic-info"
       ><strong class="comic-title" :title="comic.title">{{ comic.title }}</strong
       ><span class="comic-author">{{ comic.author || '作者未署名' }}</span
+      ><span v-if="tags.length || downloadState" class="comic-tags"
+        ><span v-for="tag in tags" :key="tag" class="comic-tag">{{ tag }}</span
+        ><span
+          v-if="downloadState"
+          class="comic-tag"
+          :class="downloadState === 'local' ? 'is-downloaded' : 'is-history'"
+          :title="downloadState === 'local' ? '本地已有下载' : '下载历史里有，本地文件已删'"
+          >{{ downloadState === 'local' ? '已下载' : '曾下载' }}</span
+        ></span
       ><span class="comic-meta"
         ><span
           >{{ comic.categories?.[0] || '漫画'

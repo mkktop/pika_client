@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, computed, ref } from 'vue'
+import { onMounted, onUnmounted, computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useComicStore, type Episode } from '../stores/comic'
 import { invoke } from '@tauri-apps/api/core'
@@ -17,6 +17,8 @@ const comic = computed(() => (store.currentComic?._id === comicId ? store.curren
 const categories = computed(() => comic.value?.categories.filter(isSupportedCategory) || [])
 const downloading = ref<number[]>([])
 const queued = ref<number[]>([])
+const downloadedOrders = ref(new Set<number>())
+const historyOrders = ref(new Set<number>())
 const acting = ref(false)
 const commentLoading = ref(false)
 const notice = ref('')
@@ -36,7 +38,25 @@ onMounted(() => {
   load()
   store.fetchRecommendations(comicId)
   store.fetchComments(comicId)
+  refreshDownloaded()
+  // 用户可能去资源管理器删除/移动了文件，切回窗口时重新核对下载状态。
+  window.addEventListener('focus', refreshDownloaded)
 })
+onUnmounted(() => window.removeEventListener('focus', refreshDownloaded))
+async function refreshDownloaded() {
+  try {
+    const orders = await invoke<number[]>('get_downloaded_episode_orders', { comicId })
+    downloadedOrders.value = new Set(orders)
+  } catch {
+    downloadedOrders.value = new Set()
+  }
+  try {
+    const orders = await invoke<number[]>('get_history_episode_orders', { comicId })
+    historyOrders.value = new Set(orders)
+  } catch {
+    historyOrders.value = new Set()
+  }
+}
 async function toggle(kind: 'favourite' | 'like') {
   if (!comic.value || acting.value) return
   acting.value = true
@@ -73,6 +93,44 @@ async function download(ep: Episode) {
     notice.value = '下载失败：' + e
   } finally {
     downloading.value = downloading.value.filter((o) => o !== ep.order)
+  }
+}
+const pendingEpisodes = computed(() =>
+  store.episodes.filter(
+    (ep) =>
+      !downloadedOrders.value.has(ep.order) &&
+      !downloading.value.includes(ep.order) &&
+      !queued.value.includes(ep.order)
+  )
+)
+async function downloadAll() {
+  if (!comic.value || acting.value) return
+  const targets = pendingEpisodes.value
+  if (!targets.length) return
+  notice.value = ''
+  let ok = 0
+  for (const ep of targets) {
+    try {
+      await invoke('start_download', {
+        req: {
+          comic_id: comicId,
+          comic_title: comic.value.title,
+          episode_order: ep.order,
+          episode_title: ep.title
+        }
+      })
+      queued.value.push(ep.order)
+      ok++
+    } catch {
+      // 单章入队失败不阻塞其余章节
+    }
+  }
+  if (ok) {
+    actionError.value = false
+    notice.value = `已把 ${ok} 个章节加入下载队列`
+  } else {
+    actionError.value = true
+    notice.value = '批量下载失败，请稍后重试'
   }
 }
 function read(ep: Episode) {
@@ -132,6 +190,20 @@ const count = (n = 0) => (n >= 10000 ? (n / 10000).toFixed(1) + '万' : n.toLoca
           </div>
           <h1>{{ comic.title }}</h1>
           <p class="detail-author">{{ comic.author || '作者未署名' }}</p>
+          <p
+            v-if="comic.created_at || comic.updated_at"
+            class="detail-dates"
+            :title="'发布 ' + (comic.created_at || '未知') + ' · 更新 ' + (comic.updated_at || '未知')"
+          >
+            <template v-if="comic.created_at">发布 {{ comic.created_at.slice(0, 10) }}</template
+            ><template
+              v-if="
+                comic.updated_at &&
+                comic.updated_at.slice(0, 10) !== (comic.created_at || '').slice(0, 10)
+              "
+              >　更新 {{ comic.updated_at.slice(0, 10) }}</template
+            >
+          </p>
           <div class="detail-stats">
             <div>
               <strong>{{ count(comic.pagesCount) }}</strong
@@ -206,26 +278,61 @@ const count = (n = 0) => (n >= 10000 ? (n / 10000).toFixed(1) + '万' : n.toLoca
           <h2>
             章节目录<small>{{ store.episodes.length }} CHAPTERS</small>
           </h2>
-          <button class="text-btn" @click="reversed = !reversed">
-            <AppIcon name="list" :size="14" />{{ reversed ? '倒序排列' : '正序排列' }}
-          </button>
+          <div class="section-controls">
+            <button
+              class="btn btn-secondary btn-sm"
+              :disabled="!pendingEpisodes.length"
+              :title="pendingEpisodes.length ? '下载全部未下载章节' : '所有章节都已下载或在队列中'"
+              @click="downloadAll"
+            >
+              <AppIcon name="download" :size="14" />下载整本<template v-if="pendingEpisodes.length"
+                >（{{ pendingEpisodes.length }} 话）</template
+              >
+            </button><button class="text-btn" @click="reversed = !reversed">
+              <AppIcon name="list" :size="14" />{{ reversed ? '倒序排列' : '正序排列' }}
+            </button>
+          </div>
         </div>
         <EmptyState v-if="!episodes.length" title="暂无章节" description="稍后再来看看。" />
         <div v-else class="episodes-grid">
           <article v-for="ep in episodes" :key="ep._id" class="episode-card">
             <div class="ep-info">
               <span class="ep-order">{{ String(ep.order).padStart(2, '0') }}</span
-              ><span class="ep-title" :title="ep.title">{{ ep.title }}</span>
+              ><span class="ep-title" :title="ep.title">{{ ep.title }}</span
+              ><span v-if="downloadedOrders.has(ep.order)" class="ep-badge">已下载</span
+              ><span
+                v-else-if="historyOrders.has(ep.order)"
+                class="ep-badge muted"
+                title="下载历史里有这一章，但本地文件已不在"
+                >曾下载</span
+              >
             </div>
             <div class="ep-actions">
               <button class="btn btn-secondary btn-sm" @click="read(ep)">阅读</button
               ><button
                 class="icon-btn"
-                :title="queued.includes(ep.order) ? '已加入队列' : '下载 ' + ep.title"
-                :disabled="downloading.includes(ep.order) || queued.includes(ep.order)"
+                :title="
+                  downloadedOrders.has(ep.order)
+                    ? '已下载到本地'
+                    : queued.includes(ep.order)
+                      ? '已加入队列'
+                      : '下载 ' + ep.title
+                "
+                :disabled="
+                  downloading.includes(ep.order) ||
+                  queued.includes(ep.order) ||
+                  downloadedOrders.has(ep.order)
+                "
                 @click="download(ep)"
               >
-                <AppIcon :name="queued.includes(ep.order) ? 'check' : 'download'" :size="16" />
+                <AppIcon
+                  :name="
+                    downloadedOrders.has(ep.order) || queued.includes(ep.order)
+                      ? 'check'
+                      : 'download'
+                  "
+                  :size="16"
+                />
               </button>
             </div>
           </article>

@@ -15,6 +15,7 @@ export interface Comic {
   isFavourite?: boolean
   isLiked?: boolean
   updated_at?: string
+  created_at?: string
   description?: string
 }
 
@@ -92,6 +93,9 @@ export const useComicStore = defineStore('comic', {
     pictureCursor: 0,
     fetchingPictures: false,
     picturesError: null as string | null,
+    historyIds: new Set<string>(),
+    localIds: new Set<string>(),
+    downloadStatesFetchedAt: 0,
     profile: null as ProfileUser | null,
     loading: false,
     requestId: 0,
@@ -151,6 +155,18 @@ export const useComicStore = defineStore('comic', {
         this.keywords = await invoke<string[]>('get_keywords')
       } catch {
         this.keywords = []
+      }
+    },
+    async fetchDownloadStates(force = false) {
+      // 卡片徽标数据：节流拉取，路由切换时反复调用也不产生额外查询。
+      if (!force && Date.now() - this.downloadStatesFetchedAt < 15000) return
+      this.downloadStatesFetchedAt = Date.now()
+      try {
+        const sets = await invoke<{ history: string[]; local: string[] }>('get_download_state_sets')
+        this.historyIds = new Set(sets.history)
+        this.localIds = new Set(sets.local)
+      } catch {
+        // 状态集合拉不到时不影响列表本身
       }
     },
     async fetchComments(comicId: string, page = 1) {

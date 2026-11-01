@@ -8,6 +8,8 @@ import EmptyState from '../components/EmptyState.vue'
 import AppIcon from '../components/AppIcon.vue'
 import Paginator from '../components/Paginator.vue'
 const router = useRouter()
+
+defineOptions({ name: 'FavoritesView' })
 const store = useComicStore()
 const resultsTop = ref<HTMLElement>()
 function goToPage(page: number) {

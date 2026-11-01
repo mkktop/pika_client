@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 const props = withDefaults(defineProps<{ page: number; pages: number; loading?: boolean }>(), {
   loading: false
@@ -21,6 +21,23 @@ const items = computed<(number | '…')[]>(() => {
 function go(target: number) {
   if (props.loading || target < 1 || target > props.pages || target === props.page) return
   emit('change', target)
+}
+// 页码直跳：输入数字后回车（或失焦）跳转，非法输入回退为当前页。
+const draft = ref(String(props.page))
+watch(
+  () => props.page,
+  (p) => {
+    draft.value = String(p)
+  }
+)
+function submitJump() {
+  const target = parseInt(draft.value, 10)
+  if (Number.isInteger(target) && target >= 1 && target <= props.pages) {
+    if (target === props.page) draft.value = String(props.page)
+    else go(target)
+  } else {
+    draft.value = String(props.page)
+  }
 }
 </script>
 <template>
@@ -53,7 +70,19 @@ function go(target: number) {
     >
       <AppIcon name="chevron-right" :size="14" />
     </button>
-    <span class="page-info">第 {{ page }} / {{ pages }} 页</span>
+    <span class="page-info"
+      >第<input
+        v-model="draft"
+        class="page-jump"
+        inputmode="numeric"
+        maxlength="5"
+        aria-label="输入页码跳转"
+        :disabled="loading"
+        @focus="($event.target as HTMLInputElement).select()"
+        @keyup.enter="($event.target as HTMLInputElement).blur()"
+        @blur="submitJump"
+      />/ {{ pages }} 页</span
+    >
   </div>
 </template>
 <style scoped>
@@ -103,6 +132,28 @@ function go(target: number) {
   font-size: 11px;
   color: var(--text-muted);
   margin-left: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.page-jump {
+  width: 36px;
+  height: 24px;
+  text-align: center;
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  outline: none;
+  transition: var(--transition);
+}
+.page-jump:focus {
+  border-color: var(--accent);
+}
+.page-jump:disabled {
+  opacity: 0.45;
 }
 @media (max-width: 760px) {
   .page-info {

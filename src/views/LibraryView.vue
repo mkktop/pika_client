@@ -17,6 +17,8 @@ interface LocalComic {
 }
 const PAGE_SIZE = 60
 const router = useRouter()
+
+defineOptions({ name: 'LibraryView' })
 const comics = ref<LocalComic[]>([])
 const stats = ref({ total_comics: 0, total_episodes: 0, total_images: 0 })
 const loading = ref(false)
@@ -42,7 +44,8 @@ async function loadLibrary() {
   loading.value = true
   error.value = ''
   try {
-    // 本地元数据体量很小，整表读取后在前端分页，搜索也能覆盖整个书库。
+    // 先核对磁盘清掉本地已删除的内容（下载历史保留），再读列表。
+    await invoke<number>('cleanup_library')
     const [items, counts] = await Promise.all([
       invoke<LocalComic[]>('get_library', { limit: 100000, offset: 0 }),
       invoke<typeof stats.value>('get_library_stats')

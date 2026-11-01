@@ -9,6 +9,8 @@ import ComicSkeleton from '../components/ComicSkeleton.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Paginator from '../components/Paginator.vue'
 const router = useRouter()
+
+defineOptions({ name: 'HomeView' })
 const store = useComicStore()
 const app = useAppStore()
 type Tab = 'leaderboard' | 'latest' | 'random'

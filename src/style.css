@@ -692,6 +692,34 @@ select.input {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.comic-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.comic-tag {
+  font-size: 9px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.comic-tag.is-downloaded {
+  color: var(--success);
+  border-color: var(--success);
+  background: transparent;
+}
+.comic-tag.is-history {
+  color: var(--text-muted);
+  border-color: var(--border);
+  background: transparent;
+}
 .comic-meta {
   display: flex;
   justify-content: space-between;

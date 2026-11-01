@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, computed } from 'vue'
+import { onActivated, onDeactivated, ref, computed, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
 import EmptyState from '../components/EmptyState.vue'
+import Paginator from '../components/Paginator.vue'
 interface DownloadTask {
   id: string
   comic_id: string
@@ -13,7 +15,19 @@ interface DownloadTask {
   downloaded_images: number
   save_path: string
 }
+interface HistoryEntry {
+  comic_id: string
+  title: string
+  episode_orders: number[]
+  first_downloaded_at?: string | null
+  last_downloaded_at?: string | null
+}
+const router = useRouter()
+
+defineOptions({ name: 'DownloadsView' })
 const tasks = ref<DownloadTask[]>([])
+const history = ref<HistoryEntry[]>([])
+const historyLoading = ref(true)
 const loading = ref(true)
 const refreshing = ref(false)
 const error = ref('')
@@ -45,6 +59,43 @@ async function loadTasks() {
     refreshing.value = false
   }
 }
+async function loadHistory() {
+  try {
+    history.value = await invoke<HistoryEntry[]>('get_download_history')
+  } catch {
+    history.value = []
+  } finally {
+    historyLoading.value = false
+  }
+}
+const finishedCount = computed(() => completedTasks.value.length + failedTasks.value.length)
+const clearing = ref(false)
+async function clearFinished() {
+  if (clearing.value || !finishedCount.value) return
+  clearing.value = true
+  try {
+    await invoke('clear_finished_download_tasks')
+    await loadTasks()
+  } catch {
+    // 清理失败时保持列表原样，下次刷新重试
+  } finally {
+    clearing.value = false
+  }
+}
+const historyDate = (iso?: string | null) => (iso ? iso.slice(0, 10) : '')
+// 历史可能积累到几万条，前端分页渲染，避免一次性挂满 DOM。
+const HISTORY_PAGE_SIZE = 60
+const historyPage = ref(1)
+const historyPages = computed(() => Math.max(1, Math.ceil(history.value.length / HISTORY_PAGE_SIZE)))
+const pagedHistory = computed(() =>
+  history.value.slice(
+    (historyPage.value - 1) * HISTORY_PAGE_SIZE,
+    historyPage.value * HISTORY_PAGE_SIZE
+  )
+)
+watch(history, () => {
+  historyPage.value = 1
+})
 const statusText = (s: string) =>
   ({
     pending: '等待中',
@@ -58,11 +109,13 @@ const progress = (t: DownloadTask) =>
     ? Math.max(0, Math.min(100, Math.round((t.downloaded_images / t.total_images) * 100)))
     : 0
 let timer: ReturnType<typeof setInterval> | undefined
-onMounted(() => {
+// 页面被 keep-alive 缓存：激活时轮询，切走时停止，避免后台空转。
+onActivated(() => {
   loadTasks()
+  loadHistory()
   timer = setInterval(loadTasks, 3000)
 })
-onUnmounted(() => clearInterval(timer))
+onDeactivated(() => clearInterval(timer))
 </script>
 <template>
   <div class="page downloads-view">
@@ -113,9 +166,20 @@ onUnmounted(() => clearInterval(timer))
           {{ tab.label }}
         </button>
       </div>
-      <router-link to="/library" class="text-btn"
-        >打开本地书库 <AppIcon name="arrow" :size="14"
-      /></router-link>
+      <div class="section-controls">
+        <button
+          class="text-btn"
+          :disabled="clearing || !finishedCount"
+          title="清掉已完成/失败的任务记录；本地文件、书库与下载历史不受影响"
+          @click="clearFinished"
+        >
+          <AppIcon name="close" :size="14" />{{
+            clearing ? '清理中…' : '清理已结束任务'
+          }}</button
+        ><router-link to="/library" class="text-btn"
+          >打开本地书库 <AppIcon name="arrow" :size="14"
+        /></router-link>
+      </div>
     </div>
     <div v-if="loading" class="loading"><span class="spinner" />正在读取下载队列…</div>
     <template v-else
@@ -181,5 +245,45 @@ onUnmounted(() => clearInterval(timer))
         </article>
       </div></template
     >
+    <section class="detail-section downloads-history">
+      <div class="section-heading">
+        <h2>
+          下载历史<small v-if="!historyLoading"
+            >{{ history.length }} 部 · 本地文件删除后记录仍保留</small
+          >
+        </h2>
+      </div>
+      <div v-if="historyLoading" class="loading">
+        <span class="spinner" />正在读取下载历史…
+      </div>
+      <p v-else-if="!history.length" class="hint">
+        还没有下载历史。整章下载完成后会在这里留下记录，可在设置中导出备份。
+      </p>
+      <div v-else class="history-grid">
+        <button
+          v-for="entry in pagedHistory"
+          :key="entry.comic_id"
+          class="history-card"
+          :title="'查看《' + entry.title + '》'"
+          @click="router.push('/comic/' + entry.comic_id)"
+        >
+          <AppIcon name="book" :size="16" />
+          <span class="history-info">
+            <strong>{{ entry.title }}</strong>
+            <small
+              >{{ entry.episode_orders.length }} 话 · 最后下载
+              {{ historyDate(entry.last_downloaded_at) }}</small
+            >
+          </span>
+          <AppIcon name="chevron-right" :size="14" />
+        </button>
+      </div>
+      <Paginator
+        v-if="!historyLoading && historyPages > 1"
+        :page="historyPage"
+        :pages="historyPages"
+        @change="historyPage = $event"
+      />
+    </section>
   </div>
 </template>

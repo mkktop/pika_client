@@ -9,6 +9,8 @@ import AppIcon from '../components/AppIcon.vue'
 import Paginator from '../components/Paginator.vue'
 const route = useRoute()
 const router = useRouter()
+
+defineOptions({ name: 'SearchView' })
 const store = useComicStore()
 const keyword = ref(String(route.query.q || ''))
 const sort = ref('dd')
