@@ -1,5 +1,27 @@
 use serde::{Deserialize, Serialize};
 
+/// 哔咔接口的字段类型不总是一致：comments 的 page 返回字符串 "1"，
+/// comics 的 page 返回数字。统一按“数字或数字字符串”容错解析。
+pub fn deserialize_i64_flexible<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .ok_or_else(|| D::Error::custom("expected an integer number")),
+        serde_json::Value::String(s) => s
+            .trim()
+            .parse::<i64>()
+            .map_err(|_| D::Error::custom(format!("invalid numeric string: {s:?}"))),
+        serde_json::Value::Null => Ok(0),
+        other => Err(D::Error::custom(format!(
+            "expected a number or numeric string, got {other:?}"
+        ))),
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApiResponse<T> {
     pub code: i32,
@@ -20,7 +42,7 @@ pub struct ComicList {
     pub total: i64,
     #[serde(default)]
     pub limit: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_i64_flexible")]
     pub page: i64,
     #[serde(default)]
     pub pages: i64,
@@ -57,22 +79,6 @@ pub struct KeywordsData {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct CollectionsData {
-    #[serde(default)]
-    pub collections: Vec<Collection>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Collection {
-    #[serde(rename = "_id", default)]
-    pub id: String,
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub comics: Vec<Comic>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CommentsData {
     pub comments: CommentsPage,
 }
@@ -83,7 +89,7 @@ pub struct CommentsPage {
     pub docs: Vec<CommentItem>,
     #[serde(default)]
     pub total: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_i64_flexible")]
     pub page: i64,
     #[serde(default)]
     pub pages: i64,
@@ -220,7 +226,7 @@ pub struct EpisodePage {
     pub total: i64,
     #[serde(default)]
     pub limit: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_i64_flexible")]
     pub page: i64,
     #[serde(default)]
     pub pages: i64,
@@ -249,7 +255,7 @@ pub struct PicturePage {
     pub total: i64,
     #[serde(default)]
     pub limit: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_i64_flexible")]
     pub page: i64,
     #[serde(default)]
     pub pages: i64,
@@ -420,4 +426,44 @@ pub struct LibraryStats {
     pub total_episodes: i64,
     pub total_images: i64,
     pub total_size_bytes: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// comments 接口实测会把 page 序列化成字符串（"page":"1"），
+    /// 而 comics 接口返回数字；两种形式都必须能解析。
+    #[test]
+    fn deserializes_comments_page_with_string_page_field() {
+        let raw = r#"{
+            "comments": {
+                "docs": [],
+                "total": 8,
+                "limit": 20,
+                "page": "1",
+                "pages": 1
+            }
+        }"#;
+        let data: CommentsData = serde_json::from_str(raw).expect("comments payload must parse");
+        assert_eq!(data.comments.page, 1);
+        assert_eq!(data.comments.pages, 1);
+        assert_eq!(data.comments.total, 8);
+    }
+
+    #[test]
+    fn deserializes_comic_list_with_numeric_page_field() {
+        let raw = r#"{
+            "comics": {
+                "docs": [],
+                "total": 1730,
+                "limit": 20,
+                "page": 2,
+                "pages": 87
+            }
+        }"#;
+        let data: ComicsData = serde_json::from_str(raw).expect("comics payload must parse");
+        assert_eq!(data.comics.page, 2);
+        assert_eq!(data.comics.pages, 87);
+    }
 }

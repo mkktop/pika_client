@@ -230,13 +230,6 @@ impl PicaClient {
         Ok(resp.keywords)
     }
 
-    /// Curated collections (大家都在看 / 大濕推薦).
-    pub async fn collections(&self) -> Result<Vec<Collection>, PicaError> {
-        let resp: CollectionsData =
-            self.request(reqwest::Method::GET, "collections", None).await?;
-        Ok(resp.collections)
-    }
-
     /// Comic comments, paginated.
     pub async fn comic_comments(
         &self,
@@ -361,7 +354,7 @@ impl PicaClient {
     /// Download one image through the same client (so the proxy applies).
     pub async fn download_image(&self, url: &str) -> Result<Vec<u8>, PicaError> {
         let client = self.client.read().await.clone();
-        let resp = client.get(url).send().await?;
+        let resp = client.get(url).send().await?.error_for_status()?;
         let bytes = resp.bytes().await?;
         Ok(bytes.to_vec())
     }
