@@ -114,16 +114,6 @@ pub async fn get_keywords(state: State<'_, AppState>) -> Result<serde_json::Valu
 }
 
 #[tauri::command]
-pub async fn get_collections(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    state
-        .client
-        .collections()
-        .await
-        .map(|r| serde_json::to_value(r).unwrap())
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 pub async fn get_comic_comments(
     state: State<'_, AppState>,
     comic_id: String,
@@ -287,15 +277,17 @@ pub async fn get_episodes(
         .map_err(|e| e.to_string())
 }
 
+/// 单页图片列表：前端先渲染第一批，再自行循环取后续页，避免首屏等全量。
 #[tauri::command]
-pub async fn get_pictures(
+pub async fn get_pictures_page(
     state: State<'_, AppState>,
     comic_id: String,
     ep_order: i64,
+    page: i64,
 ) -> Result<serde_json::Value, String> {
     state
         .client
-        .pictures_all(&comic_id, ep_order)
+        .pictures(&comic_id, ep_order, page)
         .await
         .map(|r| serde_json::to_value(r).unwrap())
         .map_err(|e| e.to_string())
@@ -423,6 +415,25 @@ pub async fn set_download_dir(state: State<'_, AppState>, dir: String) -> Result
         .set_setting("download_dir", &dir)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// 弹出系统文件夹选择框；用户取消时返回 None。
+#[tauri::command]
+pub async fn pick_download_dir(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_dialog::DialogExt;
+        app.dialog()
+            .file()
+            .blocking_pick_folder()
+            .map(|path| {
+                path.into_path()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .map_err(|e| e.to_string())
+            })
+            .transpose()
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

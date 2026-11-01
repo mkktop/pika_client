@@ -12,6 +12,7 @@ use tokio::sync::RwLock;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -78,7 +79,6 @@ pub fn run() {
             get_recommendations,
             get_random_comics,
             get_keywords,
-            get_collections,
             get_comic_comments,
             like_comic,
             get_my_profile,
@@ -91,7 +91,7 @@ pub fn run() {
             get_latest_comics,
             get_comic_info,
             get_episodes,
-            get_pictures,
+            get_pictures_page,
             toggle_favourite,
             get_my_favourites,
             start_download,
@@ -100,6 +100,7 @@ pub fn run() {
             get_library_stats,
             get_download_dir,
             set_download_dir,
+            pick_download_dir,
             get_proxy,
             set_proxy,
             save_setting,
