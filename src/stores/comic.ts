@@ -1,5 +1,12 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
+import { readPreference, writePreference } from '../utils/readerPreferences'
+
+const BLOCKED_TAGS_KEY = 'pika-blocked-tags'
+const BLOCKED_SCOPES_KEY = 'pika-blocked-tag-scopes'
+
+/** 屏蔽标签可生效的列表作用域。 */
+export type BlockedTagScope = 'search' | 'home' | 'categories'
 
 export interface Comic {
   _id: string
@@ -97,6 +104,15 @@ export const useComicStore = defineStore('comic', {
     historyIds: new Set<string>(),
     localIds: new Set<string>(),
     downloadStatesFetchedAt: 0,
+    // 屏蔽标签及其作用域（本地存储）：search=搜索页结果，home=首页排行/最新/随机，categories=分类浏览。
+    blockedTags: readPreference<string[]>(BLOCKED_TAGS_KEY, []),
+    // 旧存储里可能没有新作用域键，先铺默认值再用存储值覆盖。
+    blockedTagScopes: {
+      search: true,
+      home: false,
+      categories: false,
+      ...readPreference<Partial<Record<BlockedTagScope, boolean>>>(BLOCKED_SCOPES_KEY, {})
+    } as Record<BlockedTagScope, boolean>,
     profile: null as ProfileUser | null,
     loading: false,
     requestId: 0,
@@ -130,7 +146,7 @@ export const useComicStore = defineStore('comic', {
       await this.loadResource(
         () => invoke<Comic[]>('get_leaderboard', { tt: this.leaderboardPeriod }),
         (data) => {
-          this.leaderboard = data
+          this.leaderboard = this.filterBlocked(data, 'home')
         }
       )
     },
@@ -138,7 +154,7 @@ export const useComicStore = defineStore('comic', {
       await this.loadResource(
         () => invoke<Comic[]>('get_random_comics'),
         (data) => {
-          this.randomComics = data
+          this.randomComics = this.filterBlocked(data, 'home')
         }
       )
     },
@@ -204,7 +220,7 @@ export const useComicStore = defineStore('comic', {
       await this.loadResource(
         () => invoke<{ docs: Comic[]; pages: number }>('get_latest_comics', { page }),
         (data) => {
-          this.latest = data.docs
+          this.latest = this.filterBlocked(data.docs, 'home')
           this.latestPage = page
           this.latestPages = data.pages || page
         }
@@ -225,6 +241,25 @@ export const useComicStore = defineStore('comic', {
         }
       )
     },
+    filterBlocked(docs: Comic[], scope: BlockedTagScope): Comic[] {
+      if (!this.blockedTags.length || !this.blockedTagScopes[scope]) return docs
+      const blocked = new Set(this.blockedTags)
+      return docs.filter((comic) => !(comic.tags || []).some((tag) => blocked.has(tag)))
+    },
+    blockTag(tag: string) {
+      const value = tag.trim()
+      if (!value || this.blockedTags.includes(value)) return
+      this.blockedTags = [...this.blockedTags, value].slice(0, 30)
+      writePreference(BLOCKED_TAGS_KEY, this.blockedTags)
+    },
+    unblockTag(tag: string) {
+      this.blockedTags = this.blockedTags.filter((t) => t !== tag)
+      writePreference(BLOCKED_TAGS_KEY, this.blockedTags)
+    },
+    setBlockedTagScope(scope: BlockedTagScope, enabled: boolean) {
+      this.blockedTagScopes = { ...this.blockedTagScopes, [scope]: enabled }
+      writePreference(BLOCKED_SCOPES_KEY, this.blockedTagScopes)
+    },
     async search(keyword: string, page: number, sort: string) {
       if (page === 1) this.searchResults = []
       await this.loadResource(
@@ -233,7 +268,7 @@ export const useComicStore = defineStore('comic', {
             req: { keyword, page, sort }
           }),
         (data) => {
-          this.searchResults = data.docs
+          this.searchResults = this.filterBlocked(data.docs, 'search')
           this.searchPage = page
           this.searchPages = data.pages || (data.docs.length ? page + 1 : page)
         }
@@ -250,7 +285,7 @@ export const useComicStore = defineStore('comic', {
             sort
           }),
         (data) => {
-          this.searchResults = data.docs
+          this.searchResults = this.filterBlocked(data.docs, 'search')
           this.searchPage = page
           this.searchPages = data.pages || (data.docs.length ? page + 1 : page)
         }

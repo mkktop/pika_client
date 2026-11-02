@@ -2,9 +2,24 @@
 import { onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useAppStore } from '../stores/app'
+import { useComicStore, type BlockedTagScope } from '../stores/comic'
 import AppIcon from '../components/AppIcon.vue'
 import BrandMark from '../components/BrandMark.vue'
 const app = useAppStore()
+const comic = useComicStore()
+const blockInput = ref('')
+function addBlocked() {
+  const value = blockInput.value.trim()
+  if (!value) return
+  comic.blockTag(value)
+  blockInput.value = ''
+}
+function removeBlocked(tag: string) {
+  comic.unblockTag(tag)
+}
+function toggleScope(scope: BlockedTagScope) {
+  comic.setBlockedTagScope(scope, !comic.blockedTagScopes[scope])
+}
 const downloadDir = ref('')
 const proxy = ref('')
 const imageQuality = ref('original')
@@ -232,6 +247,89 @@ async function save(kind: string) {
           </div>
           <p class="hint">
             导出为 JSON 文件；导入时与现有记录合并（章节取并集），不会覆盖或删除已有记录。
+          </p>
+        </section>
+        <section class="setting-group">
+          <div class="setting-title">
+            <AppIcon name="close" />
+            <div>
+              <h2>屏蔽标签</h2>
+              <p>携带所选标签的漫画会从对应列表中隐藏</p>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div>
+              <strong>搜索页结果</strong>
+              <p>关键词搜索与标签过滤的结果应用屏蔽。</p>
+            </div>
+            <button
+              class="switch"
+              :class="{ on: comic.blockedTagScopes.search }"
+              role="switch"
+              :aria-checked="comic.blockedTagScopes.search"
+              aria-label="屏蔽标签作用于搜索页"
+              @click="toggleScope('search')"
+            >
+              <span />
+            </button>
+          </div>
+          <div class="setting-row">
+            <div>
+              <strong>首页列表</strong>
+              <p>排行榜、最新上线与随机推荐应用屏蔽。</p>
+            </div>
+            <button
+              class="switch"
+              :class="{ on: comic.blockedTagScopes.home }"
+              role="switch"
+              :aria-checked="comic.blockedTagScopes.home"
+              aria-label="屏蔽标签作用于首页"
+              @click="toggleScope('home')"
+            >
+              <span />
+            </button>
+          </div>
+          <div class="setting-row">
+            <div>
+              <strong>分类浏览</strong>
+              <p>分类与多分类合并的列表应用屏蔽。</p>
+            </div>
+            <button
+              class="switch"
+              :class="{ on: comic.blockedTagScopes.categories }"
+              role="switch"
+              :aria-checked="comic.blockedTagScopes.categories"
+              aria-label="屏蔽标签作用于分类浏览"
+              @click="toggleScope('categories')"
+            >
+              <span />
+            </button>
+          </div>
+          <div class="form-field">
+            <span class="eyebrow">标签列表</span>
+            <div class="blocked-tags">
+              <template v-if="comic.blockedTags.length"
+                ><button
+                  v-for="t in comic.blockedTags"
+                  :key="t"
+                  class="hot-tag blocked-chip"
+                  :title="'点击取消屏蔽「' + t + '」'"
+                  @click="removeBlocked(t)"
+                >
+                  {{ t }} ×
+                </button></template
+              ><span v-else class="setting-message">尚未屏蔽任何标签</span
+              ><input
+                v-model="blockInput"
+                class="block-input"
+                aria-label="添加屏蔽标签"
+                placeholder="+ 添加屏蔽标签（回车确认）"
+                @keydown.enter.prevent="addBlocked"
+              />
+            </div>
+          </div>
+          <p class="hint">
+            标签需与漫画携带的标签精确一致；改动在对应列表下次加载时生效（重新搜索或重新进入页面）。
           </p>
         </section>
         <section class="setting-group">

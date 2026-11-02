@@ -7,6 +7,7 @@ import ComicSkeleton from '../components/ComicSkeleton.vue'
 import EmptyState from '../components/EmptyState.vue'
 import AppIcon from '../components/AppIcon.vue'
 import Paginator from '../components/Paginator.vue'
+import { readPreference, writePreference } from '../utils/readerPreferences'
 const route = useRoute()
 const router = useRouter()
 
@@ -27,12 +28,28 @@ const sortOptions = [
   { value: 'ld', label: '最多喜欢' },
   { value: 'vd', label: '最多浏览' }
 ]
+// 标签模式的最近搜索记录，本地持久化，最多留 10 个。
+const TAG_HISTORY_KEY = 'pika-tag-history'
+const tagHistory = ref<string[]>(readPreference<string[]>(TAG_HISTORY_KEY, []))
+function rememberTag(tag: string) {
+  tagHistory.value = [tag, ...tagHistory.value.filter((t) => t !== tag)].slice(0, 10)
+  writePreference(TAG_HISTORY_KEY, tagHistory.value)
+}
+function chooseTag(tag: string) {
+  keyword.value = tag
+  doSearch()
+}
+function clearTagHistory() {
+  tagHistory.value = []
+  writePreference(TAG_HISTORY_KEY, tagHistory.value)
+}
 async function doSearch() {
   if (!keyword.value.trim()) return
   searched.value = true
   submittedKeyword.value = keyword.value.trim()
   page.value = 1
   if (mode.value === 'tag') {
+    rememberTag(submittedKeyword.value)
     await store.searchByTag(submittedKeyword.value, 1, sort.value)
   } else {
     await store.search(submittedKeyword.value, 1, sort.value)
@@ -162,6 +179,20 @@ onMounted(() => {
         @click="chooseKeyword(kw)"
       >
         {{ kw }}
+      </button>
+    </div>
+    <div v-else-if="mode === 'tag' && tagHistory.length" class="hot-keywords">
+      <span><AppIcon name="clock" :size="15" /> 最近标签</span
+      ><button
+        v-for="t in tagHistory"
+        :key="t"
+        class="hot-tag"
+        :disabled="store.loading"
+        @click="chooseTag(t)"
+      >
+        {{ t }}
+      </button><button class="text-btn tag-history-clear" :disabled="store.loading" @click="clearTagHistory">
+        清除
       </button>
     </div>
     <div v-if="searched" ref="resultsTop" class="section-heading search-results-heading">

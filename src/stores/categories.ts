@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
+import { useComicStore } from './comic'
 import type { Comic } from './comic'
 import {
   groupCategories,
@@ -77,7 +78,10 @@ export const useCategoryStore = defineStore('categories', {
         )
         if (id !== this.requestId) return
         for (const result of results) this.pagesByAlias[result.category] = result.data.pages
-        this.comics = mergeCategoryComics(results.flatMap((result) => result.data.docs), sort)
+        this.comics = useComicStore().filterBlocked(
+          mergeCategoryComics(results.flatMap((result) => result.data.docs), sort),
+          'categories'
+        )
         this.page = page
         this.pages = Math.max(0, ...aliases.map((alias) => this.pagesByAlias[alias] || 0))
       } catch (e) {
