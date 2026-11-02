@@ -1008,6 +1008,17 @@
   font-size: 11px;
   color: var(--text-secondary);
 }
+.author-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.author-link:hover {
+  color: var(--accent);
+}
 .detail-dates {
   font-size: 10px;
   color: var(--text-muted);
