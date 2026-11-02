@@ -7,12 +7,12 @@ import shutil
 import subprocess
 
 platform = os.environ["INSTALLER_PLATFORM"]
-assert platform in ("windows-x64", "macos-universal")
+assert platform in ("windows-x64", "macos-arm64")
 files = list(Path(".").glob(os.environ["INSTALLER_GLOB"]))
 assert len(files) == 1, f"Expected one installer, got {files}"
 source = files[0]
 version = json.loads(Path("package.json").read_text())["version"]
-suffix = "_x64-setup.exe" if platform == "windows-x64" else "_universal.dmg"
+suffix = "_x64-setup.exe" if platform == "windows-x64" else "_aarch64.dmg"
 assert source.name.endswith(f"_{version}{suffix}")
 directory = Path("artifacts/installers") / platform
 directory.mkdir(parents=True, exist_ok=True)

@@ -16,7 +16,7 @@ on:
         required: true
         default: windows-x64
         type: choice
-        options: [windows-x64, macos-universal]
+        options: [windows-x64, macos-arm64]
 
 permissions:
   actions: read

@@ -559,6 +559,25 @@ mod tests {
     }
 
     #[test]
+    fn arm64_only_mac_release_is_selected_for_apple_silicon() {
+        let mut next = release("v0.2.2");
+        let mut arm = next.assets[0].clone();
+        arm.name = "Pika Client_0.2.2_aarch64.dmg".to_string();
+        arm.browser_download_url = "https://github.com/mkktop/pika_client/releases/download/v0.2.2/Pika.Client_0.2.2_aarch64.dmg".to_string();
+        next.assets.push(arm.clone());
+        assert_eq!(
+            installer_for(&next, "macos", "aarch64").unwrap().0.name,
+            arm.name
+        );
+        assert!(installer_for(&next, "macos", "x86_64").is_none());
+        assert!(installer_for(&next, "windows", "x86_64").is_some());
+        let (check, pending) = evaluate_release("0.2.1", Some(next), "macos", "aarch64").unwrap();
+        assert!(check.can_install);
+        assert_eq!(check.installer_kind, Some(InstallerKind::Macos));
+        assert_eq!(pending.unwrap().asset.name, arm.name);
+    }
+
+    #[test]
     fn rejects_untrusted_download_urls() {
         for url in [
             "http://github.com/mkktop/pika_client/releases/download/v1/app.exe",
