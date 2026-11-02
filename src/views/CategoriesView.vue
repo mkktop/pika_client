@@ -68,7 +68,7 @@ function changeSort(event: Event) {
 }
 function goToPage(page: number) {
   if (!current.value || store.loading) return
-  resultsTop.value?.scrollIntoView({ behavior: 'instant', block: 'start' })
+  resultsTop.value?.scrollIntoView({ behavior: 'auto', block: 'start' })
   store.fetchComics(current.value.aliases, sort.value, page)
 }
 function retry() {

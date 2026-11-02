@@ -152,7 +152,7 @@ function goBack() {
 async function goToCommentPage(page: number) {
   if (commentLoading.value) return
   commentLoading.value = true
-  commentsTop.value?.scrollIntoView({ behavior: 'instant', block: 'start' })
+  commentsTop.value?.scrollIntoView({ behavior: 'auto', block: 'start' })
   await store.fetchComments(comicId, page)
   commentLoading.value = false
 }

@@ -47,6 +47,22 @@ enum UpdateStatus {
     Unpublished,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum InstallerKind {
+    Windows,
+    Macos,
+}
+
+impl InstallerKind {
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Windows => "exe",
+            Self::Macos => "dmg",
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct UpdateCheck {
     status: UpdateStatus,
@@ -56,10 +72,12 @@ pub struct UpdateCheck {
     published_at: Option<String>,
     can_install: bool,
     download_size: Option<u64>,
+    installer_kind: Option<InstallerKind>,
 }
 
 struct PendingUpdate {
     asset: Asset,
+    kind: InstallerKind,
     downloaded: Option<PathBuf>,
 }
 
@@ -102,23 +120,28 @@ fn trusted_download(url: &str) -> bool {
             .starts_with("/mkktop/pika_client/releases/download/")
 }
 
-fn installer_for(release: &Release, os: &str, arch: &str) -> Option<Asset> {
-    let suffix = match (os, arch) {
-        ("windows", "x86_64") => "_x64-setup.exe",
-        ("windows", "aarch64") => "_arm64-setup.exe",
+fn installer_for(release: &Release, os: &str, arch: &str) -> Option<(Asset, InstallerKind)> {
+    let (suffixes, kind): (&[&str], InstallerKind) = match (os, arch) {
+        ("windows", "x86_64") => (&["_x64-setup.exe"], InstallerKind::Windows),
+        ("windows", "aarch64") => (&["_arm64-setup.exe"], InstallerKind::Windows),
+        ("macos", "aarch64") => (&["_aarch64.dmg", "_universal.dmg"], InstallerKind::Macos),
+        ("macos", "x86_64") => (&["_x64.dmg", "_universal.dmg"], InstallerKind::Macos),
         _ => return None,
     };
-    release
-        .assets
-        .iter()
-        .find(|asset| {
-            asset.name.ends_with(suffix)
-                && asset.size > 0
-                && asset.size <= MAX_INSTALLER_SIZE
-                && expected_digest(asset).is_some()
-                && trusted_download(&asset.browser_download_url)
-        })
-        .cloned()
+    suffixes.iter().find_map(|suffix| {
+        release
+            .assets
+            .iter()
+            .find(|asset| {
+                asset.name.ends_with(suffix)
+                    && asset.size > 0
+                    && asset.size <= MAX_INSTALLER_SIZE
+                    && expected_digest(asset).is_some()
+                    && trusted_download(&asset.browser_download_url)
+            })
+            .cloned()
+            .map(|asset| (asset, kind))
+    })
 }
 
 fn evaluate_release(
@@ -135,6 +158,7 @@ fn evaluate_release(
         published_at: None,
         can_install: false,
         download_size: None,
+        installer_kind: None,
     };
     let Some(release) = release else {
         return Ok((check, None));
@@ -155,11 +179,13 @@ fn evaluate_release(
     check.notes = release.body;
     check.published_at = release.published_at;
     check.can_install = asset.is_some();
-    check.download_size = asset.as_ref().map(|a| a.size);
+    check.download_size = asset.as_ref().map(|(asset, _)| asset.size);
+    check.installer_kind = asset.as_ref().map(|(_, kind)| *kind);
     Ok((
         check,
-        asset.map(|asset| PendingUpdate {
+        asset.map(|(asset, kind)| PendingUpdate {
             asset,
+            kind,
             downloaded: None,
         }),
     ))
@@ -324,7 +350,11 @@ pub async fn download_update(
         .await
         .map_err(|_| "无法创建更新缓存目录")?;
     // Random local names avoid trusting release asset names as file paths.
-    let path = directory.join(format!("{}.exe", uuid::Uuid::new_v4()));
+    let path = directory.join(format!(
+        "{}.{}",
+        uuid::Uuid::new_v4(),
+        pending.kind.extension()
+    ));
     if let Err(error) = download_installer(&client, &pending.asset, &path, &on_progress).await {
         let _ = tokio::fs::remove_file(&path).await;
         return Err(error);
@@ -339,7 +369,7 @@ pub async fn install_update(
     state: State<'_, AppState>,
     updates: State<'_, UpdateManager>,
 ) -> Result<(), String> {
-    if !cfg!(target_os = "windows") {
+    if !cfg!(any(target_os = "windows", target_os = "macos")) {
         return Err("当前系统请前往发布页手动安装更新".to_string());
     }
     let guard = updates
@@ -379,9 +409,19 @@ pub async fn install_update(
     }
     verify_installer(&pending.asset, size, &hex::encode(hash.finalize()))?;
     drop(file);
-    std::process::Command::new(path)
-        .spawn()
-        .map_err(|_| "无法启动安装程序，请重试或前往发布页手动安装")?;
+    match pending.kind {
+        InstallerKind::Windows if cfg!(target_os = "windows") => {
+            std::process::Command::new(path)
+                .spawn()
+                .map_err(|_| "无法启动安装程序，请重试或前往发布页手动安装")?;
+        }
+        InstallerKind::Macos if cfg!(target_os = "macos") => {
+            app.opener()
+                .open_path(path.to_string_lossy().into_owned(), None::<&str>)
+                .map_err(|_| "无法打开安装包，请重试或前往发布页手动安装")?;
+        }
+        _ => return Err("安装包与当前系统不匹配，请重新检查更新".to_string()),
+    }
     app.exit(0);
     Ok(())
 }
@@ -478,6 +518,44 @@ mod tests {
             assert!(!check.can_install, "{variant}");
             assert!(pending.is_none());
         }
+    }
+
+    #[test]
+    fn mac_updates_select_universal_or_matching_architecture_dmg() {
+        let mut next = release("v0.2.0");
+        let mut universal = next.assets[0].clone();
+        universal.name = "Pika Client_0.2.0_universal.dmg".to_string();
+        universal.browser_download_url = "https://github.com/mkktop/pika_client/releases/download/v0.2.0/Pika.Client_0.2.0_universal.dmg".to_string();
+        next.assets.push(universal.clone());
+        for arch in ["aarch64", "x86_64"] {
+            let (asset, kind) = installer_for(&next, "macos", arch).unwrap();
+            assert_eq!(asset.name, universal.name);
+            assert_eq!(kind, InstallerKind::Macos);
+            assert_eq!(kind.extension(), "dmg");
+        }
+        assert_eq!(
+            installer_for(&next, "windows", "x86_64").unwrap().1,
+            InstallerKind::Windows
+        );
+        assert!(installer_for(&next, "macos", "x86").is_none());
+        let mut intel = universal;
+        intel.name = "Pika Client_0.2.0_x64.dmg".to_string();
+        next.assets.push(intel.clone());
+        assert_eq!(
+            installer_for(&next, "macos", "x86_64").unwrap().0.name,
+            intel.name
+        );
+        assert!(
+            installer_for(&next, "macos", "aarch64")
+                .unwrap()
+                .0
+                .name
+                .ends_with("_universal.dmg")
+        );
+        let (check, pending) = evaluate_release("0.1.0", Some(next), "macos", "aarch64").unwrap();
+        assert!(check.can_install);
+        assert_eq!(check.installer_kind, Some(InstallerKind::Macos));
+        assert!(pending.is_some());
     }
 
     #[test]

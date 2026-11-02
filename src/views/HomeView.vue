@@ -45,7 +45,7 @@ async function switchTab(tab: Tab) {
 }
 function goToLatestPage(page: number) {
   if (store.loading) return
-  resultsTop.value?.scrollIntoView({ behavior: 'instant', block: 'start' })
+  resultsTop.value?.scrollIntoView({ behavior: 'auto', block: 'start' })
   store.fetchLatest(page)
 }
 onMounted(load)

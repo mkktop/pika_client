@@ -4,6 +4,7 @@ import AppIcon from './AppIcon.vue'
 import { useUpdateStore } from '../stores/updates'
 
 const updates = useUpdateStore()
+const macInstaller = computed(() => updates.result?.installer_kind === 'macos')
 onMounted(() => updates.loadVersion())
 const publishedDate = computed(() => {
   const date = new Date(updates.result?.published_at || '')
@@ -74,7 +75,15 @@ function megabytes(bytes: number) {
           :disabled="updates.busy"
           @click="updates.install"
         >
-          {{ updates.phase === 'installing' ? '正在启动安装程序…' : '退出并安装' }}
+          {{
+            updates.phase === 'installing'
+              ? macInstaller
+                ? '正在打开安装包…'
+                : '正在启动安装程序…'
+              : macInstaller
+                ? '退出并打开安装包'
+                : '退出并安装'
+          }}
         </button>
         <button
           class="btn btn-secondary btn-sm"
@@ -86,6 +95,10 @@ function megabytes(bytes: number) {
       </div>
       <p v-if="!updates.result.can_install" class="hint">
         此版本没有适配当前系统且可校验的安装包，请前往发布页手动下载更新。
+      </p>
+      <p v-else-if="macInstaller" class="hint">
+        请先等待漫画下载完成。打开安装包前会退出客户端；将 Pika Client 拖入 Applications
+        文件夹并替换旧版，书库、账号和设置会保留。
       </p>
       <p v-else class="hint">
         安装会退出客户端并打开安装向导，请先等待漫画下载完成。书库、账号和设置会保留。

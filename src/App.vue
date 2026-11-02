@@ -59,7 +59,7 @@ watch(
     await nextTick()
     const isListView = LIST_VIEW_NAMES.has(String(route.name || ''))
     const restore = isListView ? scrollPositions.get(route.fullPath) : undefined
-    main.value?.scrollTo({ top: restore ?? 0, behavior: 'instant' })
+    main.value?.scrollTo({ top: restore ?? 0, behavior: 'auto' })
   }
 )
 function search() {

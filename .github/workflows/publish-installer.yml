@@ -8,13 +8,23 @@ on:
         required: true
         type: string
       run_id:
-        description: Successful Windows build workflow run
+        description: Successful Desktop build workflow run
         required: true
         type: string
+      platform:
+        description: Installer platform
+        required: true
+        default: windows-x64
+        type: choice
+        options: [windows-x64, macos-universal]
 
 permissions:
   actions: read
   contents: write
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
 
 jobs:
   upload:
@@ -22,73 +32,28 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag }}
       BUILD_RUN_ID: ${{ inputs.run_id }}
+      INSTALLER_PLATFORM: ${{ inputs.platform }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
-      - name: Validate version and build provenance
+      - name: Validate the source build
         uses: actions/github-script@v7
         with:
           script: |
-            const { execFileSync } = require('node:child_process');
-            const tag = process.env.RELEASE_TAG;
-            const runId = process.env.BUILD_RUN_ID;
-            if (!/^v\d+\.\d+\.\d+$/.test(tag) || !/^\d+$/.test(runId)) {
-              throw new Error('Invalid version tag or workflow run ID');
-            }
-            execFileSync('node', ['scripts/check-release-version.mjs', tag], { stdio: 'inherit' });
-            const { data: run } = await github.rest.actions.getWorkflowRun({
-              ...context.repo, run_id: Number(runId)
-            });
-            if (run.status !== 'completed' || run.conclusion !== 'success' ||
-                run.path !== '.github/workflows/check.yml' ||
-                run.head_repository.full_name !== `${context.repo.owner}/${context.repo.repo}` ||
-                !/^[0-9a-f]{40}$/.test(run.head_sha)) {
-              throw new Error('Installer must come from a successful build in this repository');
-            }
-            const tree = (ref) => execFileSync('git', ['rev-parse', `${ref}^{tree}`], { encoding: 'utf8' }).trim();
-            if (tree('HEAD') !== tree(run.head_sha)) {
-              throw new Error('Build source differs from the version tag');
-            }
-            core.info(`Verified ${tag} against build ${run.id} (${run.head_sha})`);
+            const { findVerifiedRun } = require('./scripts/release-artifacts.cjs');
+            await findVerifiedRun({ github, context, tag: process.env.RELEASE_TAG, runId: process.env.BUILD_RUN_ID });
       - uses: actions/download-artifact@v4
         with:
-          name: windows-x64-installer
-          path: installer
+          name: ${{ inputs.platform }}-installer
+          path: installers/${{ inputs.platform }}-installer
           run-id: ${{ inputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Upload installer to release draft
+      - name: Verify and upload to release draft
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require('node:fs');
-            const crypto = require('node:crypto');
-            const tag = process.env.RELEASE_TAG;
-            const files = fs.readdirSync('installer');
-            if (files.length !== 1 || !files[0].endsWith(`_${tag.slice(1)}_x64-setup.exe`)) {
-              throw new Error('Expected exactly one installer matching the release version');
-            }
-            const name = files[0];
-            const data = fs.readFileSync(`installer/${name}`);
-            if (data.subarray(0, 2).toString() !== 'MZ') throw new Error('Not a Windows executable');
-            const digest = `sha256:${crypto.createHash('sha256').update(data).digest('hex')}`;
-            const { data: releases } = await github.rest.repos.listReleases({ ...context.repo, per_page: 100 });
-            let release = releases.find((item) => item.tag_name === tag);
-            if (release && !release.draft) throw new Error('Refusing to modify a published release');
-            if (!release) {
-              ({ data: release } = await github.rest.repos.createRelease({
-                ...context.repo, tag_name: tag, name: `Pika Client ${tag}`, draft: true
-              }));
-            }
-            if (release.assets.length) {
-              if (release.assets.length !== 1 || release.assets[0].digest !== digest || release.assets[0].size !== data.length) {
-                throw new Error('Release draft already contains different assets');
-              }
-            } else {
-              await github.rest.repos.uploadReleaseAsset({
-                ...context.repo, release_id: release.id, name, data,
-                headers: { 'content-type': 'application/octet-stream' }
-              });
-            }
-            core.info(`Release draft ${release.id}: ${name}, ${data.length} bytes, ${digest}`);
+            const { uploadInstallers } = require('./scripts/release-artifacts.cjs');
+            await uploadInstallers({ github, context, core, tag: process.env.RELEASE_TAG,
+              directory: 'installers', platforms: [process.env.INSTALLER_PLATFORM] });

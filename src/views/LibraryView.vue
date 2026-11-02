@@ -61,7 +61,7 @@ async function loadLibrary() {
 }
 function goToPage(target: number) {
   page.value = target
-  resultsTop.value?.scrollIntoView({ behavior: 'instant', block: 'start' })
+  resultsTop.value?.scrollIntoView({ behavior: 'auto', block: 'start' })
 }
 onMounted(() => loadLibrary())
 </script>
