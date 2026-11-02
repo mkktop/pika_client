@@ -133,7 +133,7 @@ select:focus-visible {
   overflow-y: auto;
   overflow-x: hidden;
   padding: 32px 38px 48px;
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
 }
 .main-content.fullscreen {
   padding: 0;

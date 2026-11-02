@@ -13,7 +13,7 @@ defineOptions({ name: 'FavoritesView' })
 const store = useComicStore()
 const resultsTop = ref<HTMLElement>()
 function goToPage(page: number) {
-  resultsTop.value?.scrollIntoView({ behavior: 'instant', block: 'start' })
+  resultsTop.value?.scrollIntoView({ behavior: 'auto', block: 'start' })
   store.fetchFavourites(page)
 }
 onMounted(() => store.fetchFavourites())

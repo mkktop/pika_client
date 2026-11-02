@@ -70,7 +70,7 @@ async function doSearch() {
 async function goToPage(target: number) {
   if (store.loading) return
   page.value = target
-  resultsTop.value?.scrollIntoView({ behavior: 'instant', block: 'start' })
+  resultsTop.value?.scrollIntoView({ behavior: 'auto', block: 'start' })
   if (mode.value === 'tag') {
     await store.searchByTag(submittedKeyword.value, target, sort.value)
   } else {
