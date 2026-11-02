@@ -23,6 +23,7 @@
   --accent-glow: #d86e4818;
   --success: #5e8972;
   --warning: #b98b41;
+  --history: #d9822b;
   --error: #cf5b55;
   --border: #e5e9e1;
   --radius: 16px;
@@ -49,6 +50,7 @@
   --accent-hover: #f5ac8d;
   --accent-glow: #ee9a7519;
   --success: #88b899;
+  --history: #e8a45e;
   --error: #ed9188;
   --shadow: 0 8px 30px #00000015;
 }
@@ -725,8 +727,8 @@ select.input {
   background: transparent;
 }
 .comic-tag.is-history {
-  color: var(--text-muted);
-  border-color: var(--border);
+  color: var(--history);
+  border-color: var(--history);
   background: transparent;
 }
 .comic-meta {

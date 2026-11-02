@@ -1144,8 +1144,8 @@
   opacity: 0.9;
 }
 .ep-badge.muted {
-  color: var(--text-muted);
-  border-color: var(--border);
+  color: var(--history);
+  border-color: var(--history);
 }
 /* Download history */
 .downloads-history {
