@@ -4,7 +4,10 @@ export default defineConfig({
   fullyParallel: false,
   use: {
     baseURL: 'http://127.0.0.1:1420',
-    channel: 'msedge',
+    channel: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? undefined : 'msedge',
+    launchOptions: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+      ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH }
+      : undefined,
     headless: true,
     reducedMotion: 'reduce',
     viewport: { width: 1280, height: 820 },

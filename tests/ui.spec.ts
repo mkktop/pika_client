@@ -44,12 +44,40 @@ async function fixture(page: Page, loggedIn = true) {
       state.__fail = ''
       state.isTauri = true
       state.__windowState = { maximized: false, minimized: false, closed: false }
+      state.__updateResult = {
+        status: 'unpublished',
+        current_version: '0.1.0',
+        version: null,
+        notes: null,
+        published_at: null,
+        can_install: false,
+        download_size: null
+      }
       state.__TAURI_INTERNALS__ = {
         metadata: { currentWindow: { label: 'main' } },
+        transformCallback: () => 1,
+        unregisterCallback: () => {},
         invoke: async (cmd: string, args: any = {}) => {
           state.__calls.push({ cmd, args })
           if (state.__fail === cmd) throw '连接暂时不可用，请稍后重试'
           switch (cmd) {
+            case 'get_app_version':
+              return state.__updateResult.current_version
+            case 'check_for_updates':
+              if (state.__holdUpdateCheck)
+                await new Promise<void>((resolve) => {
+                  state.__finishUpdateCheck = resolve
+                })
+              return state.__updateResult
+            case 'download_update':
+              if (state.__holdUpdateDownload) {
+                state.__sendUpdateProgress = (downloaded: number, total: number) =>
+                  args.onProgress.onmessage({ downloaded, total })
+                await new Promise<void>((resolve) => {
+                  state.__finishUpdateDownload = resolve
+                })
+              }
+              return
             case 'plugin:window|is_maximized':
               return state.__windowState.maximized
             case 'plugin:window|toggle_maximize':
@@ -240,6 +268,156 @@ test('settings save actual field values and local library empty state', async ({
   await capture(page, 'settings')
   await page.goto('/library')
   await expect(page.getByText('本地书库为空')).toBeVisible()
+})
+
+test('update checks show the runtime version, unpublished and current states', async ({ page }) => {
+  await fixture(page)
+  await page.goto('/settings')
+  await expect(page.locator('.app-updates')).toContainText('当前版本 v0.1.0')
+  await page.evaluate(() => {
+    ;(window as any).__holdUpdateCheck = true
+  })
+  await page.getByRole('button', { name: '检查更新', exact: true }).click()
+  await expect(page.getByRole('button', { name: '检查中…', exact: true })).toBeDisabled()
+  await page.waitForFunction(() => Boolean((window as any).__finishUpdateCheck))
+  await page.evaluate(() => {
+    const state = window as any
+    state.__holdUpdateCheck = false
+    state.__finishUpdateCheck()
+  })
+  await expect(page.getByRole('status').filter({ hasText: '暂未发布正式版本' })).toBeVisible()
+  await page.evaluate(() => {
+    ;(window as any).__updateResult = { status: 'current', current_version: '0.12.3' }
+  })
+  await page.getByRole('button', { name: '检查更新', exact: true }).click()
+  await expect(page.locator('.app-updates')).toContainText('当前已是最新版本')
+  await expect(page.locator('.settings-aside small')).toHaveText('PIKA DESKTOP · v0.12.3')
+  await expect(page.getByRole('button', { name: '下载更新' })).toHaveCount(0)
+})
+
+async function availableUpdate(page: Page, canInstall = true) {
+  await page.evaluate((canInstall) => {
+    ;(window as any).__updateResult = {
+      status: 'available',
+      current_version: '0.1.0',
+      version: '0.2.0',
+      notes: '修复下载问题\n<img src=x onerror=alert(1)>',
+      published_at: '2026-11-01T12:00:00Z',
+      can_install: canInstall,
+      download_size: 10 * 1024 * 1024
+    }
+  }, canInstall)
+}
+
+test('update download survives navigation and only installs after an explicit click', async ({
+  page
+}) => {
+  await fixture(page)
+  await page.goto('/settings')
+  await availableUpdate(page)
+  await page.getByRole('button', { name: '检查更新', exact: true }).click()
+  await expect(page.locator('.app-updates')).toContainText('发现新版本 v0.2.0')
+  await page.getByText('更新说明', { exact: true }).click()
+  await expect(page.locator('.update-notes')).toContainText('<img src=x onerror=alert(1)>')
+  await expect(page.locator('.update-notes img')).toHaveCount(0)
+  await page.evaluate(() => {
+    ;(window as any).__holdUpdateDownload = true
+  })
+  await page.getByRole('button', { name: /下载更新/ }).click()
+  await page.waitForFunction(() => Boolean((window as any).__sendUpdateProgress))
+  await page.evaluate(() => {
+    ;(window as any).__sendUpdateProgress(4 * 1024 * 1024, 10 * 1024 * 1024)
+  })
+  await expect(page.getByRole('progressbar', { name: '更新下载进度' })).toHaveAttribute(
+    'value',
+    '4194304'
+  )
+  await expect(page.locator('.update-progress')).toContainText('40%')
+  await expect(page.getByRole('button', { name: '检查更新', exact: true })).toBeDisabled()
+  await page.locator('a[href="/library"]').click()
+  await expect(page.getByText('本地书库为空')).toBeVisible()
+  await page.getByRole('link', { name: '偏好设置', exact: true }).click()
+  await expect(page.locator('.update-progress')).toContainText('40%')
+  await page.evaluate(() => {
+    ;(window as any).__finishUpdateDownload()
+  })
+  await expect(page.getByRole('button', { name: '退出并安装', exact: true })).toBeEnabled()
+  expect(
+    await page.evaluate(() =>
+      (window as any).__calls.filter((c: any) => c.cmd === 'install_update')
+    )
+  ).toHaveLength(0)
+  await page.evaluate(() => {
+    ;(window as any).__fail = 'install_update'
+  })
+  await page.getByRole('button', { name: '退出并安装', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText('安装更新失败')
+  await expect(page.getByRole('button', { name: '退出并安装', exact: true })).toBeEnabled()
+  await page.evaluate(() => {
+    ;(window as any).__fail = ''
+  })
+  await page.getByRole('button', { name: '退出并安装', exact: true }).click()
+  await expect(page.getByRole('button', { name: '正在启动安装程序…', exact: true })).toBeDisabled()
+})
+
+test('update failures can be retried and unsupported installers use the release page', async ({
+  page
+}) => {
+  await fixture(page)
+  await page.goto('/settings')
+  await page.evaluate(() => {
+    ;(window as any).__fail = 'check_for_updates'
+  })
+  await page.getByRole('button', { name: '检查更新', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText('检查更新失败')
+  await expect(page.locator('.app-updates')).not.toContainText('当前已是最新版本')
+  await page.evaluate(() => {
+    ;(window as any).__fail = ''
+  })
+  await availableUpdate(page, false)
+  await page.getByRole('button', { name: '检查更新', exact: true }).click()
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /下载更新/ })).toHaveCount(0)
+  await page.getByRole('button', { name: '前往发布页' }).click()
+  expect(
+    await page.evaluate(() =>
+      (window as any).__calls.some((c: any) => c.cmd === 'open_update_release')
+    )
+  ).toBe(true)
+  await availableUpdate(page)
+  await page.getByRole('button', { name: '检查更新', exact: true }).click()
+  await page.evaluate(() => {
+    ;(window as any).__fail = 'download_update'
+  })
+  await page.getByRole('button', { name: /下载更新/ }).click()
+  await expect(page.getByRole('alert')).toContainText('下载更新失败')
+  await expect(page.getByRole('button', { name: /下载更新/ })).toBeEnabled()
+  await page.evaluate(() => {
+    ;(window as any).__fail = ''
+  })
+  await page.getByRole('button', { name: /下载更新/ }).click()
+  await expect(page.getByRole('button', { name: '退出并安装', exact: true })).toBeEnabled()
+  await expect(page.getByRole('alert')).toHaveCount(0)
+})
+
+test('available update fits the minimum desktop window in both themes', async ({ page }) => {
+  await fixture(page)
+  await page.goto('/settings')
+  await availableUpdate(page)
+  await page.getByRole('button', { name: '检查更新', exact: true }).click()
+  await expect(page.locator('.settings-form > section').last()).toHaveClass(/app-updates/)
+  await page.setViewportSize({ width: 960, height: 640 })
+  await expect(page.getByRole('button', { name: /下载更新/ })).toBeVisible()
+  expect(
+    await page.locator('.main-content').evaluate((el) => el.scrollWidth <= el.clientWidth)
+  ).toBe(true)
+  await page.locator('.app-updates').scrollIntoViewIfNeeded()
+  await page.screenshot({ animations: 'disabled', path: 'artifacts/ui/settings-update-light.png' })
+  await page.getByTitle('切换深色外观').click()
+  await expect(page.locator('.app-container')).toHaveAttribute('data-theme', 'dark')
+  await expect(page.getByRole('button', { name: /下载更新/ })).toBeVisible()
+  await page.locator('.app-updates').scrollIntoViewIfNeeded()
+  await page.screenshot({ animations: 'disabled', path: 'artifacts/ui/settings-update-dark.png' })
 })
 
 test('reader paging, zen mode, saved page and chapter navigation', async ({ page }) => {

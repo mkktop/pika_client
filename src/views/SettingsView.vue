@@ -5,7 +5,10 @@ import { useAppStore } from '../stores/app'
 import { useComicStore, type BlockedTagScope } from '../stores/comic'
 import AppIcon from '../components/AppIcon.vue'
 import BrandMark from '../components/BrandMark.vue'
+import AppUpdates from '../components/AppUpdates.vue'
+import { useUpdateStore } from '../stores/updates'
 const app = useAppStore()
+const updates = useUpdateStore()
 const comic = useComicStore()
 const blockInput = ref('')
 function addBlocked() {
@@ -500,12 +503,13 @@ async function save(kind: string) {
             }}</span
           >
         </section>
+        <AppUpdates />
       </div>
       <aside class="settings-aside">
         <BrandMark />
         <h3>PIKA DESKTOP</h3>
         <p>专注看本的桌面客户端。支持在线浏览、账号收藏、章节下载和阅读进度记忆。</p>
-        <small>PIKA DESKTOP · v0.1.0</small>
+        <small>PIKA DESKTOP{{ updates.currentVersion ? ' · v' + updates.currentVersion : '' }}</small>
       </aside>
     </div>
   </div>

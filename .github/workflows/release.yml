@@ -1,0 +1,49 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Check tag and application versions
+        shell: bash
+        run: node scripts/check-release-version.mjs "$GITHUB_REF_NAME"
+      - run: npm ci
+      - run: npm run build
+      - name: Test Rust backend
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+      - name: Build and publish installer
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Pika Client ${{ github.ref_name }}
+          releaseBody: |
+            Windows x64 安装包。已有用户可在「偏好设置 → 软件更新」中检查、下载并安装。
+            安装会保留本地账号、设置和书库数据。
+          releaseDraft: true
+          prerelease: false
+          args: --target x86_64-pc-windows-msvc --bundles nsis
