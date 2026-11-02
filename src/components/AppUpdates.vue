@@ -32,7 +32,7 @@ function megabytes(bytes: number) {
         <strong
           >当前版本 {{ updates.currentVersion ? 'v' + updates.currentVersion : '读取中…' }}</strong
         >
-        <p>手动检查更新，连接使用下方的代理设置。</p>
+        <p>检查与下载使用「网络连接」中的代理设置。</p>
       </div>
       <button class="btn btn-secondary btn-sm" :disabled="updates.busy" @click="updates.check">
         <AppIcon name="refresh" :size="14" />

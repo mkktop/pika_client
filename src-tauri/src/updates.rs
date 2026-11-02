@@ -516,7 +516,9 @@ mod tests {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut request = [0u8; 4096];
                 socket.read(&mut request).await.unwrap();
-                let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n");
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n"
+                );
                 socket.write_all(header.as_bytes()).await.unwrap();
                 socket.write_all(body).await.unwrap();
             });
@@ -524,7 +526,8 @@ mod tests {
             asset.browser_download_url = format!("http://{address}/installer");
             // Local test traffic only; production requests always use http_client's HTTPS policy.
             let client = Client::builder().no_proxy().build().unwrap();
-            let path = std::env::temp_dir().join(format!("pika-updater-test-{}", uuid::Uuid::new_v4()));
+            let path =
+                std::env::temp_dir().join(format!("pika-updater-test-{}", uuid::Uuid::new_v4()));
             let channel = Channel::new(|_| Ok(()));
             let result = download_installer(&client, &asset, &path, &channel).await;
             server.await.unwrap();

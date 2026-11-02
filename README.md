@@ -9,7 +9,7 @@
     <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-6-3178c6?style=flat-square&amp;logo=typescript&amp;logoColor=white" alt="TypeScript 6" /></a>
     <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-2024-ce8d61?style=flat-square&amp;logo=rust&amp;logoColor=white" alt="Rust 2024 Edition" /></a>
     <img src="https://img.shields.io/badge/Platform-Windows-5e8972?style=flat-square" alt="Windows" />
-    <img src="https://img.shields.io/badge/Version-0.1.0-d86e48?style=flat-square" alt="Version 0.1.0" />
+    <img src="https://img.shields.io/badge/Version-0.2.0-d86e48?style=flat-square" alt="Version 0.2.0" />
   </p>
   <p>
     <a href="#界面预览">界面预览</a> ·
