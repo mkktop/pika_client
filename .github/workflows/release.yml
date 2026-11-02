@@ -48,4 +48,4 @@ jobs:
           script: |
             const { uploadInstallers } = require('./scripts/release-artifacts.cjs');
             await uploadInstallers({ github, context, core, tag: process.env.RELEASE_TAG,
-              directory: 'installers', platforms: ['windows-x64', 'macos-universal'] });
+              directory: 'installers', platforms: ['windows-x64', 'macos-arm64'] });

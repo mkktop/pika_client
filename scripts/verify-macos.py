@@ -1,11 +1,11 @@
-"""Check the distributed DMG, both CPU slices, signature integrity and launch."""
+"""Check the Apple Silicon DMG, ARM64-only binary, signature and native launch."""
 from pathlib import Path
 import json
 import plistlib
 import subprocess
 import tempfile
 
-bundle_dir = Path("src-tauri/target/universal-apple-darwin/release/bundle")
+bundle_dir = Path("src-tauri/target/aarch64-apple-darwin/release/bundle")
 images = list((bundle_dir / "dmg").glob("*.dmg"))
 assert len(images) == 1, images
 subprocess.run(["hdiutil", "verify", str(images[0])], check=True)
@@ -22,14 +22,15 @@ with tempfile.TemporaryDirectory(prefix="pika-dmg-") as mount:
         executable = app / "Contents/MacOS" / info["CFBundleExecutable"]
         assert executable.is_file()
         assert (Path(mount) / "Applications").is_symlink()
-        subprocess.run(["lipo", str(executable), "-verify_arch", "arm64", "x86_64"], check=True)
+        architectures = subprocess.check_output(["lipo", "-archs", str(executable)], text=True).split()
+        assert architectures == ["arm64"], f"Expected an ARM64-only application, got {architectures}"
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
         process = subprocess.Popen([str(executable)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         try:
             output, _ = process.communicate(timeout=10)
             raise RuntimeError(f"Application exited during launch ({process.returncode}): {output}")
         except subprocess.TimeoutExpired:
-            print("Universal application stayed running during the 10-second native launch check")
+            print("ARM64-only application stayed running during the 10-second native launch check")
         finally:
             process.terminate()
             try:

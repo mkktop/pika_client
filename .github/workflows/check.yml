@@ -21,10 +21,10 @@ jobs:
             args: --bundles nsis
             installer: src-tauri/target/release/bundle/nsis/*.exe
           - os: macos-latest
-            platform: macos-universal
-            targets: aarch64-apple-darwin,x86_64-apple-darwin
-            args: --target universal-apple-darwin --bundles dmg
-            installer: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            platform: macos-arm64
+            targets: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin --bundles dmg
+            installer: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

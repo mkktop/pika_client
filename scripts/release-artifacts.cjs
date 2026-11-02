@@ -52,7 +52,7 @@ async function findVerifiedRun({ github, context, tag, runId }) {
 async function uploadInstallers({ github, context, core, tag, directory, platforms }) {
   const version = tag.slice(1)
   const expectedTree = tree('HEAD')
-  const suffixes = { 'windows-x64': '_x64-setup.exe', 'macos-universal': '_universal.dmg' }
+  const suffixes = { 'windows-x64': '_x64-setup.exe', 'macos-arm64': '_aarch64.dmg' }
   // Validate every artifact before writing anything to a Release.
   const installers = platforms.map((platform) => {
     if (!suffixes[platform]) throw new Error('Unsupported installer platform')
@@ -73,7 +73,7 @@ async function uploadInstallers({ github, context, core, tag, directory, platfor
       data.length !== manifest.size ||
       digest !== `sha256:${manifest.sha256}` ||
       (platform === 'windows-x64' && data.subarray(0, 2).toString() !== 'MZ') ||
-      (platform === 'macos-universal' && data.subarray(-512, -508).toString() !== 'koly')
+      (platform === 'macos-arm64' && data.subarray(-512, -508).toString() !== 'koly')
     ) {
       throw new Error(`Installer checksum or format mismatch: ${platform}`)
     }
@@ -92,7 +92,7 @@ async function uploadInstallers({ github, context, core, tag, directory, platfor
       name: `Pika Client ${tag}`,
       draft: true,
       prerelease: false,
-      body: 'Windows x64 与 macOS Universal 安装包。Mac 版适用于 Apple Silicon 和 Intel（macOS 11+），采用本地签名，未进行 Apple 公证。'
+      body: 'Windows x64 与 macOS ARM64 安装包。Mac 版适用于 Apple Silicon（M 系列，macOS 11+），采用本地签名，未进行 Apple 公证。'
     }))
   }
   for (const installer of installers) {
