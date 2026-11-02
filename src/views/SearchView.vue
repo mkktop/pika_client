@@ -35,6 +35,17 @@ function rememberTag(tag: string) {
   tagHistory.value = [tag, ...tagHistory.value.filter((t) => t !== tag)].slice(0, 10)
   writePreference(TAG_HISTORY_KEY, tagHistory.value)
 }
+// 关键词模式的最近搜索记录，同样本地持久化。
+const KW_HISTORY_KEY = 'pika-kw-history'
+const kwHistory = ref<string[]>(readPreference<string[]>(KW_HISTORY_KEY, []))
+function rememberKeyword(kw: string) {
+  kwHistory.value = [kw, ...kwHistory.value.filter((t) => t !== kw)].slice(0, 10)
+  writePreference(KW_HISTORY_KEY, kwHistory.value)
+}
+function clearKwHistory() {
+  kwHistory.value = []
+  writePreference(KW_HISTORY_KEY, kwHistory.value)
+}
 function chooseTag(tag: string) {
   keyword.value = tag
   doSearch()
@@ -52,6 +63,7 @@ async function doSearch() {
     rememberTag(submittedKeyword.value)
     await store.searchByTag(submittedKeyword.value, 1, sort.value)
   } else {
+    rememberKeyword(submittedKeyword.value)
     await store.search(submittedKeyword.value, 1, sort.value)
   }
 }
@@ -169,6 +181,20 @@ onMounted(() => {
         {{ mode === 'tag' ? '按标签查找' : '搜索漫画' }} <AppIcon name="arrow" :size="15" />
       </button>
     </form>
+    <div v-if="mode === 'keyword' && kwHistory.length" class="hot-keywords">
+      <span><AppIcon name="clock" :size="15" /> 最近搜索</span
+      ><button
+        v-for="kw in kwHistory"
+        :key="kw"
+        class="hot-tag"
+        :disabled="store.loading"
+        @click="chooseKeyword(kw)"
+      >
+        {{ kw }}
+      </button><button class="text-btn tag-history-clear" :disabled="store.loading" @click="clearKwHistory">
+        清除
+      </button>
+    </div>
     <div v-if="mode === 'keyword' && store.keywords.length" class="hot-keywords">
       <span><AppIcon name="trend" :size="15" /> 大家在搜</span
       ><button

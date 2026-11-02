@@ -8,6 +8,12 @@ const BLOCKED_SCOPES_KEY = 'pika-blocked-tag-scopes'
 /** 屏蔽标签可生效的列表作用域。 */
 export type BlockedTagScope = 'search' | 'home' | 'categories'
 
+// pikaimg 自定义协议的 webview 侧地址：Windows WebView2 要求走
+// http://<scheme>.localhost/ 形态才能进入协议处理器。
+function pikaimgUrl(kind: 'remote' | 'local', target: string): string {
+  return `http://pikaimg.localhost/${kind}/${encodeURIComponent(target)}`
+}
+
 export interface Comic {
   _id: string
   title: string
@@ -25,6 +31,7 @@ export interface Comic {
   updated_at?: string
   created_at?: string
   description?: string
+  chineseTeam?: string
 }
 
 export interface Episode {
@@ -37,6 +44,8 @@ export interface Episode {
 export interface Picture {
   _id: string
   media: { path: string; fileServer: string }
+  /** 本地已下载章节的绝对路径（离线阅读时存在）。 */
+  localPath?: string
 }
 
 export interface PicturePage {
@@ -101,6 +110,8 @@ export const useComicStore = defineStore('comic', {
     pictureCursor: 0,
     fetchingPictures: false,
     picturesError: null as string | null,
+    // 当前章节是否来自本地下载（离线阅读）。
+    picturesLocal: false,
     historyIds: new Set<string>(),
     localIds: new Set<string>(),
     downloadStatesFetchedAt: 0,
@@ -316,9 +327,26 @@ export const useComicStore = defineStore('comic', {
       this.pictureCursor = 0
       this.fetchingPictures = false
       this.picturesError = null
+      this.picturesLocal = false
       this.loading = true
       this.error = null
       try {
+        // 章节已下载时直接读本地文件，断网也能看。
+        const local = await invoke<string[] | null>('get_local_pictures', { comicId, epOrder })
+        if (id !== this.requestId) return
+        if (local && local.length) {
+          this.pictures = local.map((path) => ({
+            _id: path,
+            media: { path: '', fileServer: '' },
+            localPath: path
+          }))
+          this.pictureTotal = local.length
+          this.picturePages = 1
+          this.pictureCursor = 1
+          this.picturesLocal = true
+          this.loading = false
+          return
+        }
         // 首批先上屏，后续 API 分页在后台继续追加，长章节不用等全量。
         const first = await invoke<PicturePage>('get_pictures_page', { comicId, epOrder, page: 1 })
         if (id !== this.requestId) return
@@ -357,6 +385,9 @@ export const useComicStore = defineStore('comic', {
       }
     },
     getImageUrl(pic: Picture | { media: { path: string; fileServer: string } }): string {
+      if ('localPath' in pic && pic.localPath) {
+        return pikaimgUrl('local', pic.localPath)
+      }
       const path = pic.media.path
       if (path.startsWith('http://') || path.startsWith('https://')) return path
       return pic.media.fileServer.replace(/\/$/, '') + '/static/' + path
@@ -364,14 +395,20 @@ export const useComicStore = defineStore('comic', {
     getThumbUrl(comic: Comic): string {
       if (!comic.thumb) return ''
       const path = comic.thumb.path
-      if (path.startsWith('http://') || path.startsWith('https://')) return path
-      return comic.thumb.fileServer.replace(/\/$/, '') + '/static/' + path
+      const url =
+        path.startsWith('http://') || path.startsWith('https://')
+          ? path
+          : comic.thumb.fileServer.replace(/\/$/, '') + '/static/' + path
+      return pikaimgUrl('remote', url)
     },
     getAvatarUrl(avatar?: { path: string; fileServer: string }): string {
       if (!avatar) return ''
       const path = avatar.path
-      if (path.startsWith('http://') || path.startsWith('https://')) return path
-      return avatar.fileServer.replace(/\/$/, '') + '/static/' + path
+      const url =
+        path.startsWith('http://') || path.startsWith('https://')
+          ? path
+          : avatar.fileServer.replace(/\/$/, '') + '/static/' + path
+      return pikaimgUrl('remote', url)
     }
   }
 })

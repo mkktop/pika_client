@@ -199,6 +199,16 @@ const count = (n = 0) => (n >= 10000 ? (n / 10000).toFixed(1) + '万' : n.toLoca
             {{ comic.author }}
           </button>
           <p v-else class="detail-author">作者未署名</p>
+          <p v-if="comic.chineseTeam" class="detail-dates">
+            汉化组
+            <button
+              class="author-link"
+              :title="'搜索「' + comic.chineseTeam + '」的作品'"
+              @click="router.push({ name: 'search', query: { q: comic.chineseTeam } })"
+            >
+              {{ comic.chineseTeam }}
+            </button>
+          </p>
           <p
             v-if="comic.created_at || comic.updated_at"
             class="detail-dates"

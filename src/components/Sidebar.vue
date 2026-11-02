@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import { useAppStore } from '../stores/app'
 import { useComicStore } from '../stores/comic'
 import AppIcon from './AppIcon.vue'
@@ -16,6 +17,25 @@ const personal = [
   { path: '/library', icon: 'library', label: '本地书库' },
   { path: '/downloads', icon: 'download', label: '下载管理' }
 ]
+const punching = ref(false)
+const punchNotice = ref('')
+async function punchIn() {
+  if (punching.value) return
+  punching.value = true
+  punchNotice.value = ''
+  try {
+    const res = await invoke<{ res?: { punchInLastDay?: string } }>('punch_in')
+    await comics.fetchProfile()
+    punchNotice.value = res?.res?.punchInLastDay
+      ? '已连续签到 ' + res.res.punchInLastDay + ' 天'
+      : '签到成功'
+  } catch (e) {
+    punchNotice.value = '签到失败：' + e
+  } finally {
+    punching.value = false
+    setTimeout(() => (punchNotice.value = ''), 4000)
+  }
+}
 onMounted(() => comics.fetchProfile())
 </script>
 <template>
@@ -58,6 +78,16 @@ onMounted(() => comics.fetchProfile())
       <div class="note-line" />
     </div>
     <div class="sidebar-bottom">
+      <span v-if="punchNotice" class="punch-notice" role="status">{{ punchNotice }}</span
+      ><button
+        v-if="comics.profile && !comics.profile.isPunched"
+        class="nav-item punch-btn"
+        :disabled="punching"
+        :title="'每日签到 · 今日还未签到'"
+        @click="punchIn"
+      >
+        <AppIcon name="check" /><span>{{ punching ? '签到中…' : '每日签到' }}</span>
+      </button>
       <router-link to="/settings" class="nav-item" active-class="active" title="偏好设置"
         ><AppIcon name="settings" /><span>偏好设置</span></router-link
       ><button

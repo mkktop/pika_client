@@ -6,11 +6,21 @@ use std::sync::Arc;
 use tauri::State;
 use tokio::sync::RwLock;
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ImageCacheConfig {
+    pub enabled: bool,
+    pub limit_bytes: u64,
+}
+
 pub struct AppState {
     pub client: Arc<PicaClient>,
     pub db: Arc<Database>,
     pub download_manager: Arc<DownloadManager>,
     pub download_dir: Arc<RwLock<String>>,
+    /// 封面缓存开关与容量上限（pikaimg 协议在请求时读取）。
+    pub image_cache: Arc<RwLock<ImageCacheConfig>>,
+    /// 缓存目录当前占用字节数（启动时扫描、写入/淘汰时增减）。
+    pub image_cache_used: Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -168,6 +178,74 @@ pub async fn get_image_quality(state: State<'_, AppState>) -> Result<String, Str
     Ok(state.client.get_image_quality().await)
 }
 
+#[derive(Debug, Serialize)]
+pub struct ImageCacheStatus {
+    pub enabled: bool,
+    pub limit_mb: u64,
+    pub used_bytes: u64,
+}
+
+#[tauri::command]
+pub async fn get_image_cache_status(
+    state: State<'_, AppState>,
+) -> Result<ImageCacheStatus, String> {
+    let config = state.image_cache.read().await.clone();
+    Ok(ImageCacheStatus {
+        enabled: config.enabled,
+        limit_mb: config.limit_bytes / (1024 * 1024),
+        used_bytes: state
+            .image_cache_used
+            .load(std::sync::atomic::Ordering::Relaxed),
+    })
+}
+
+/// 保存封面缓存开关与上限（MB，夹在 16~8192 之间）。
+#[tauri::command]
+pub async fn set_image_cache_settings(
+    state: State<'_, AppState>,
+    enabled: bool,
+    limit_mb: u64,
+) -> Result<(), String> {
+    let limit_mb = limit_mb.clamp(16, 8192);
+    state
+        .db
+        .set_setting("image_cache_enabled", if enabled { "1" } else { "0" })
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_setting("image_cache_limit_mb", &limit_mb.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    *state.image_cache.write().await = ImageCacheConfig {
+        enabled,
+        limit_bytes: limit_mb * 1024 * 1024,
+    };
+    Ok(())
+}
+
+/// 清空封面缓存目录并重置占用统计，返回释放的字节数。
+#[tauri::command]
+pub async fn clear_image_cache(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<u64, String> {
+    use tauri::Manager;
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("imgcache");
+    let freed = crate::dir_used_bytes(&dir);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    state
+        .image_cache_used
+        .store(0, std::sync::atomic::Ordering::Relaxed);
+    Ok(freed)
+}
+
 #[tauri::command]
 pub async fn set_image_quality(state: State<'_, AppState>, quality: String) -> Result<(), String> {
     state
@@ -315,6 +393,48 @@ pub async fn get_episodes(
         .await
         .map(|r| serde_json::to_value(r).unwrap())
         .map_err(|e| e.to_string())
+}
+
+/// 离线阅读：返回已下载章节的本地图片绝对路径（按页序）。
+/// 记录在但目录已消失时降级为未下载（与书库清理同一策略），返回 None 走在线。
+#[tauri::command]
+pub async fn get_local_pictures(
+    state: State<'_, AppState>,
+    comic_id: String,
+    ep_order: i64,
+) -> Result<Option<Vec<String>>, String> {
+    let Some(path) = state
+        .db
+        .get_episode_save_path(&comic_id, ep_order)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+    let dir = std::path::PathBuf::from(&path);
+    if !dir.is_dir() {
+        let _ = state.db.cleanup_missing_downloads_for_comic(&comic_id).await;
+        return Ok(None);
+    }
+    let mut files: Vec<String> = std::fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+            if matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp" | "gif" | "avif") {
+                Some(path.to_string_lossy().to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    if files.is_empty() {
+        return Ok(None);
+    }
+    // 下载命名是 0001.jpg、0002.jpg…，字典序即页序。
+    files.sort();
+    Ok(Some(files))
 }
 
 /// 单页图片列表：前端先渲染第一批，再自行循环取后续页，避免首屏等全量。

@@ -278,6 +278,21 @@ impl Database {
         Ok(())
     }
 
+    /// 已下载章节的磁盘目录（离线阅读用）；目录是否仍在由调用方核对。
+    pub async fn get_episode_save_path(
+        &self,
+        comic_id: &str,
+        episode_order: i64,
+    ) -> Result<Option<String>, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT save_path FROM episodes WHERE comic_id = ? AND episode_order = ? AND downloaded = 1",
+        )
+        .bind(comic_id)
+        .bind(episode_order)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
     pub async fn mark_episode_downloaded(
         &self,
         comic_id: &str,

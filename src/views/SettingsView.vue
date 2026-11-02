@@ -25,6 +25,68 @@ const proxy = ref('')
 const imageQuality = ref('original')
 const saving = ref('')
 const messages = ref<Record<string, string>>({})
+const cacheEnabled = ref(false)
+const cacheLimit = ref(256)
+const cacheUsed = ref(0)
+function formatBytes(n: number): string {
+  if (n < 1024) return n + ' B'
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
+  if (n < 1024 ** 3) return (n / 1024 / 1024).toFixed(1) + ' MB'
+  return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB'
+}
+async function loadCacheStatus() {
+  try {
+    const status = await invoke<{ enabled: boolean; limit_mb: number; used_bytes: number }>(
+      'get_image_cache_status'
+    )
+    cacheEnabled.value = status.enabled
+    cacheLimit.value = status.limit_mb
+    cacheUsed.value = status.used_bytes
+  } catch {
+    // 状态拉不到时保持默认展示
+  }
+}
+async function persistCacheSettings(): Promise<boolean> {
+  if (saving.value) return false
+  saving.value = 'cache'
+  messages.value.cache = ''
+  try {
+    await invoke('set_image_cache_settings', {
+      enabled: cacheEnabled.value,
+      limitMb: Math.max(16, Math.min(8192, Number(cacheLimit.value) || 256))
+    })
+    await loadCacheStatus()
+    messages.value.cache = cacheEnabled.value ? '封面缓存已启用' : '封面缓存已关闭'
+    return true
+  } catch (e) {
+    messages.value.cache = '保存失败：' + e
+    return false
+  } finally {
+    saving.value = ''
+  }
+}
+async function toggleCache() {
+  const next = !cacheEnabled.value
+  cacheEnabled.value = next
+  if (!(await persistCacheSettings())) cacheEnabled.value = !next
+}
+async function saveCacheLimit() {
+  await persistCacheSettings()
+}
+async function clearCache() {
+  if (saving.value) return
+  saving.value = 'cache'
+  messages.value.cache = ''
+  try {
+    const freed = await invoke<number>('clear_image_cache')
+    messages.value.cache = '已清空 ' + formatBytes(freed)
+    await loadCacheStatus()
+  } catch (e) {
+    messages.value.cache = '清空失败：' + e
+  } finally {
+    saving.value = ''
+  }
+}
 const qualityOptions = [
   { value: 'original', label: '原始画质', note: '保留每一处细节' },
   { value: 'lower', label: '均衡画质', note: '清晰与速度兼顾' },
@@ -35,7 +97,8 @@ onMounted(async () => {
   downloadDir.value = app.downloadDir
   const results = await Promise.allSettled([
     invoke<string | null>('get_proxy'),
-    invoke<string>('get_image_quality')
+    invoke<string>('get_image_quality'),
+    loadCacheStatus()
   ])
   if (results[0].status === 'fulfilled') proxy.value = results[0].value || ''
   if (results[1].status === 'fulfilled') imageQuality.value = results[1].value
@@ -186,6 +249,70 @@ async function save(kind: string) {
               >{{ messages.quality }}</span
             >
           </div>
+        </section>
+        <section class="setting-group">
+          <div class="setting-title">
+            <AppIcon name="image" />
+            <div>
+              <h2>封面缓存</h2>
+              <p>封面与头像的本地磁盘缓存，默认关闭</p>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div>
+              <strong>启用封面缓存</strong>
+              <p>关闭时每次从网络加载（仍走代理设置）。</p>
+            </div>
+            <button
+              class="switch"
+              :class="{ on: cacheEnabled }"
+              role="switch"
+              :aria-checked="cacheEnabled"
+              aria-label="启用封面缓存"
+              @click="toggleCache"
+            >
+              <span />
+            </button>
+          </div>
+          <div class="setting-row">
+            <div>
+              <strong>容量上限</strong>
+              <p>超出后按最久未使用自动清理，单位 MB。</p>
+            </div>
+            <div class="cache-limit-field">
+              <input
+                v-model.number="cacheLimit"
+                type="number"
+                min="16"
+                max="8192"
+                step="16"
+                class="input cache-limit"
+                aria-label="缓存容量上限（MB）"
+                :disabled="!cacheEnabled"
+              /><span>MB</span>
+            </div>
+          </div>
+          <div class="setting-actions">
+            <button
+              class="btn btn-secondary btn-sm"
+              :disabled="!!saving || !cacheEnabled"
+              @click="saveCacheLimit"
+            >
+              保存上限</button
+            ><button class="btn btn-secondary btn-sm" :disabled="!!saving" @click="clearCache">
+              清空缓存</button
+            ><span role="status" class="setting-message cache-usage"
+              >当前占用 {{ formatBytes(cacheUsed) }}</span
+            ><span
+              role="status"
+              class="setting-message"
+              :class="{ error: messages.cache?.includes('失败') }"
+              >{{ messages.cache }}</span
+            >
+          </div>
+          <p class="hint">
+            缓存仅包含封面与头像缩略图（单张超过 8MB 的异常响应不落盘），阅读内容不进入缓存。
+          </p>
         </section>
         <section class="setting-group">
           <div class="setting-title">

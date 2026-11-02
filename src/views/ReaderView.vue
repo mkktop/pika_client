@@ -172,7 +172,7 @@ onUnmounted(() => {
       <button class="text-btn" @click="back"><AppIcon name="back" :size="17" />返回作品</button>
       <div class="reader-heading">
         <h1>{{ title }}</h1>
-        <p>第 {{ epOrder }} 话 · 在线阅读</p>
+        <p>第 {{ epOrder }} 话 · {{ store.picturesLocal ? '离线阅读' : '在线阅读' }}</p>
       </div>
       <div class="reader-controls">
         <select v-model="width" class="input reader-width" aria-label="阅读宽度">

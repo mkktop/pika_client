@@ -334,6 +334,15 @@ kbd {
 .sidebar-bottom {
   padding: 0 15px 12px;
 }
+.punch-btn {
+  color: #3e7b4f;
+}
+.punch-notice {
+  display: block;
+  padding: 0 12px 8px;
+  font-size: 10px;
+  color: #3e7b4f;
+}
 .collapse-btn {
   font-size: 11px;
   color: #7a8b7e;

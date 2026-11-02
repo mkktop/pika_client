@@ -447,6 +447,9 @@
   color: var(--accent);
   border-color: var(--accent);
 }
+.hot-keywords + .hot-keywords {
+  margin-top: -26px;
+}
 .tag-history-clear {
   margin-left: auto;
   font-size: 10px;
@@ -454,6 +457,17 @@
 }
 .tag-history-clear:hover {
   color: var(--accent);
+}
+.cache-limit-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.cache-limit {
+  width: 96px;
+  background: var(--bg-primary);
 }
 .blocked-tags {
   display: flex;
