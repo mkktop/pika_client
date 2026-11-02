@@ -3,6 +3,7 @@ mod category_policy;
 mod commands;
 mod db;
 mod download;
+mod image_protocol;
 mod updates;
 
 use commands::*;
@@ -43,31 +44,10 @@ fn handle_pikaimg(
 
     let uri = request.uri().to_string();
     log::debug!("pikaimg request: {uri}");
-    // Windows WebView2 把自定义协议请求派发成 http://pikaimg.localhost/…，
-    // 原生 scheme 则是 pikaimg://… 或 pikaimg://localhost/…，这里全部归一化。
-    let rest = uri
-        .strip_prefix("http://pikaimg.localhost/")
-        .or_else(|| uri.strip_prefix("https://pikaimg.localhost/"))
-        .or_else(|| uri.strip_prefix("pikaimg://localhost/"))
-        .or_else(|| uri.strip_prefix("pikaimg://"))
-        .map(|s| s.to_string());
-    let Some(rest) = rest else {
-        log::warn!("pikaimg rejected unexpected uri shape: {uri}");
-        responder.respond(respond(400, "text/plain", b"bad scheme".to_vec()));
-        return;
-    };
-    let (kind, encoded) = match rest.split_once('/') {
-        Some((k, v)) => (k.to_ascii_lowercase(), v.trim_start_matches('/')),
-        None => {
-            log::warn!("pikaimg rejected unparsable uri: {uri}");
-            responder.respond(respond(400, "text/plain", b"bad request".to_vec()));
-            return;
-        }
-    };
-    let decoded = match urlencoding::decode(encoded) {
-        Ok(v) => v.into_owned(),
-        Err(_) => {
-            responder.respond(respond(400, "text/plain", b"bad encoding".to_vec()));
+    let (kind, decoded) = match image_protocol::parse_image_uri(&uri) {
+        Ok(route) => route,
+        Err(error) => {
+            responder.respond(respond(400, "text/plain", error.as_bytes().to_vec()));
             return;
         }
     };

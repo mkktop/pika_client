@@ -8,8 +8,8 @@
     <a href="https://vuejs.org/"><img src="https://img.shields.io/badge/Vue-3-42b883?style=flat-square&amp;logo=vuedotjs&amp;logoColor=white" alt="Vue 3" /></a>
     <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-6-3178c6?style=flat-square&amp;logo=typescript&amp;logoColor=white" alt="TypeScript 6" /></a>
     <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-2024-ce8d61?style=flat-square&amp;logo=rust&amp;logoColor=white" alt="Rust 2024 Edition" /></a>
-    <img src="https://img.shields.io/badge/Platform-Windows-5e8972?style=flat-square" alt="Windows" />
-    <img src="https://img.shields.io/badge/Version-0.2.0-d86e48?style=flat-square" alt="Version 0.2.0" />
+    <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-5e8972?style=flat-square" alt="Windows 与 macOS" />
+    <img src="https://img.shields.io/badge/Version-0.2.1-d86e48?style=flat-square" alt="Version 0.2.1" />
   </p>
   <p>
     <a href="#界面预览">界面预览</a> ·
@@ -20,7 +20,7 @@
   </p>
 </div>
 
-Pika Client 基于 **Tauri 2、Vue 3、TypeScript 和 Rust**，将漫画发现、分类搜索、账号收藏、在线阅读和章节下载整合在一个桌面窗口中。当前以 **Windows** 为主要开发和验证环境。
+Pika Client 基于 **Tauri 2、Vue 3、TypeScript 和 Rust**，将漫画发现、分类搜索、账号收藏、在线阅读和章节下载整合在一个桌面窗口中。提供 **Windows x64** 安装包与 **macOS Universal** 安装包，Mac 版兼容 Apple Silicon（M 系列）和 Intel，要求 macOS 11 或更高版本。
 
 ## 界面预览
 
@@ -68,6 +68,7 @@ Pika Client 基于 **Tauri 2、Vue 3、TypeScript 和 Rust**，将漫画发现�
 | [Rust / Cargo](https://rust-lang.org/tools/install/) | Rust 1.90 或更高版本；Windows 使用 MSVC 工具链                       |
 | Windows 构建组件                                     | Microsoft C++ Build Tools，勾选「使用 C++ 的桌面开发」及 Windows SDK |
 | WebView2                                             | Microsoft Edge WebView2 Runtime，用于渲染桌面界面                    |
+| macOS 构建组件                                       | macOS 11+、Xcode Command Line Tools（`xcode-select --install`）       |
 
 Windows 组件的安装方式见 [Tauri 官方环境准备文档](https://v2.tauri.app/start/prerequisites/#windows)。
 
@@ -126,23 +127,43 @@ src-tauri/target/release/
 npm run tauri build -- --no-bundle
 ```
 
-仓库中的跨平台图标资源不代表对应平台已经完成适配；macOS、Linux 和移动端尚未列入当前验证范围。
+### macOS 通用安装包
+
+在 Mac 上运行：
+
+```sh
+npm ci
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+npm run tauri build -- --target universal-apple-darwin --bundles dmg
+```
+
+通用 DMG 位于 `src-tauri/target/universal-apple-darwin/release/bundle/dmg/`，内含同时支持 Apple Silicon 和 Intel 的 `Pika Client.app`。双击 DMG 后，将应用拖入 Applications 文件夹。
+
+Mac 构建使用本地临时签名（ad-hoc），**没有 Apple Developer ID 签名或 Apple 公证**。首次打开若被 macOS 拦截，请确认安装包来自本仓库的正式 Release，再到「系统设置 → 隐私与安全性」选择「仍要打开」。构建流程会验证两种 CPU 架构、应用签名完整性、DMG 校验和，并在 Mac 构建机上执行原生启动检查；账号登录与完整阅读流程仍需实际使用验证。
+
+| 平台 | 安装包 | 当前验证范围 |
+| --- | --- | --- |
+| Windows x64 | NSIS `.exe` | 原生编译、Rust 测试与安装包构建 |
+| macOS 11+（Apple Silicon / Intel） | Universal `.dmg` | 两种架构编译、Rust 测试、签名与磁盘映像校验、原生启动 |
+| Linux / 移动端 | 暂未提供 | 尚未构建或验证 |
 
 ### 检查更新与升级
 
 在「偏好设置 → 软件更新」点击「检查更新」，客户端会读取本仓库 GitHub Releases 的最新正式版本，展示版本号、发布时间和更新说明。检查与安装包下载共用应用内的代理设置；未发布版本、网络错误和请求限流会分别提示，不会误报为已是最新版。
 
-Windows x64 / ARM64 在有匹配的 NSIS 安装包且 GitHub 提供 SHA-256 摘要时，可点击「下载更新」，查看下载进度。下载完成后先校验文件大小与摘要；点击「退出并安装」会再次校验、退出客户端并打开安装向导。若有正在进行或排队的漫画下载，会提示等待下载完成。升级保留现有应用数据；安装完成后重新打开客户端即可。
+Windows x64 / ARM64 在有匹配的 NSIS 安装包且 GitHub 提供 SHA-256 摘要时，可点击「下载更新」，查看下载进度。下载完成后先校验文件大小与摘要；点击「退出并安装」会再次校验、退出客户端并打开安装向导。
 
-下载过程中切换页面不会中断更新。校验失败的文件不会执行，可重新检查并下载。没有适配安装包或缺少摘要时，使用「前往发布页」在系统浏览器中手动下载；非 Windows 平台也使用这个入口。更新说明按纯文本展示。
+macOS 可下载匹配架构的 DMG，或同时兼容两种 Mac 的 Universal DMG。下载并校验后，点击「退出并打开安装包」，将应用拖入 Applications 并替换旧版。Mac 版不会自动覆盖应用目录；升级保留书库、账号和设置。两个平台都会在漫画下载或排队时阻止退出安装，待下载完成后再重试。
+
+下载过程中切换页面不会中断更新。校验失败的文件不会执行，可重新检查并下载。没有适配安装包或缺少摘要时，使用「前往发布页」在系统浏览器中手动下载。更新说明按纯文本展示。封面、头像与离线图片使用 Tauri 的平台协议转换，在 Windows WebView2 和 macOS WKWebView 下分别生成正确地址。
 
 ### 发布供客户端检测的新版本
 
 1. 将 `package.json`、`package-lock.json`（包括根包条目）、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 和 `src-tauri/Cargo.lock` 中的应用版本同步为新的语义化版本，例如 `0.2.0`。
 2. 提交并推送代码，再推送对应标签，例如 `v0.2.0`。可先运行 `node scripts/check-release-version.mjs v0.2.0` 检查版本是否一致。
-3. `Windows release` 工作流会运行 Rust 测试、构建前端和 Windows x64 NSIS 安装包，并上传到 **Release 草稿**。在 GitHub 补充更新说明、确认附件上传完整后发布草稿。
+3. 先等待 `Desktop build` 的 Windows 与 Mac 两个任务通过，再推送版本标签。`Desktop release` 会将同一源码树下已经通过验证的 Windows 与 Mac 安装包上传到 **Release 草稿**，逐一核对构建记录、版本号和 SHA-256，避免重新构建时引入差异。补充更新说明、确认两个附件完整后发布草稿。若标签先于构建完成推送，可在构建成功后重新运行发布工作流。
 
-客户端只检测已发布的正式 Release，不检测草稿或预发布版本；比较语义化版本（例如 `0.10.0` 高于 `0.9.0`），不以标签字符串或提交时间判断升级。GitHub 上传附件时生成的 `sha256:` 摘要用于校验，无需额外配置更新签名密钥。当前工作流生成 Windows x64 安装包；其他架构需另行构建对应安装包。
+客户端只检测已发布的正式 Release，不检测草稿或预发布版本；比较语义化版本（例如 `0.10.0` 高于 `0.9.0`），不以标签字符串或提交时间判断升级。GitHub 上传附件时生成的 `sha256:` 摘要用于校验，无需额外配置更新签名密钥。当前工作流生成 Windows x64 安装包与 macOS Universal 安装包；Windows ARM64 需另行构建。
 
 ## 使用与快捷键
 
@@ -198,6 +219,8 @@ Windows 默认应用数据目录：
 ```
 
 下载图片按漫画名和章节名保存，文件名以页码编号。修改下载目录仅影响后续任务，已有文件保留在原位置。
+
+macOS 默认数据目录为 `~/Library/Application Support/com.pika.client/`，同样包含 `pika.db` 与 `downloads/`。替换 Applications 内的应用不会删除此目录。
 
 ## 验证与测试
 

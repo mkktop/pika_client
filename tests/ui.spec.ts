@@ -7,7 +7,7 @@ async function capture(page: Page, name: string) {
   await page.screenshot({ animations: 'disabled', path: 'artifacts/ui/' + name + '.png' })
 }
 
-async function fixture(page: Page, loggedIn = true) {
+async function fixture(page: Page, loggedIn = true, platform: 'windows' | 'macos' = 'windows') {
   await page.route('https://pika.test/**', (route) => {
     const n = Number(new URL(route.request().url()).pathname.split('/').pop()) || 1
     const colors = ['#a3b79d', '#dbb18e', '#8ea7a0', '#b5a68c', '#a6ad87', '#cf9e8d']
@@ -22,7 +22,7 @@ async function fixture(page: Page, loggedIn = true) {
     })
   })
   await page.addInitScript(
-    ({ loggedIn }) => {
+    ({ loggedIn, platform }) => {
       const comics = Array.from({ length: 12 }, (_, i) => ({
         _id: 'comic-' + i,
         title:
@@ -51,12 +51,19 @@ async function fixture(page: Page, loggedIn = true) {
         notes: null,
         published_at: null,
         can_install: false,
-        download_size: null
+        download_size: null,
+        installer_kind: null
       }
       state.__TAURI_INTERNALS__ = {
         metadata: { currentWindow: { label: 'main' } },
         transformCallback: () => 1,
         unregisterCallback: () => {},
+        convertFileSrc: (filePath: string, protocol: string) => {
+          const encoded = encodeURIComponent(filePath)
+          return platform === 'windows'
+            ? `http://${protocol}.localhost/${encoded}`
+            : `${protocol}://localhost/${encoded}`
+        },
         invoke: async (cmd: string, args: any = {}) => {
           state.__calls.push({ cmd, args })
           if (state.__fail === cmd) throw '连接暂时不可用，请稍后重试'
@@ -189,7 +196,7 @@ async function fixture(page: Page, loggedIn = true) {
         }
       }
     },
-    { loggedIn }
+    { loggedIn, platform }
   )
 }
 
@@ -295,19 +302,77 @@ test('update checks show the runtime version, unpublished and current states', a
   await expect(page.getByRole('button', { name: '下载更新' })).toHaveCount(0)
 })
 
-async function availableUpdate(page: Page, canInstall = true) {
-  await page.evaluate((canInstall) => {
-    ;(window as any).__updateResult = {
-      status: 'available',
-      current_version: '0.1.0',
-      version: '0.2.0',
-      notes: '修复下载问题\n<img src=x onerror=alert(1)>',
-      published_at: '2026-11-01T12:00:00Z',
-      can_install: canInstall,
-      download_size: 10 * 1024 * 1024
-    }
-  }, canInstall)
+async function availableUpdate(
+  page: Page,
+  canInstall = true,
+  installerKind: 'windows' | 'macos' = 'windows'
+) {
+  await page.evaluate(
+    ({ canInstall, installerKind }) => {
+      ;(window as any).__updateResult = {
+        status: 'available',
+        current_version: '0.1.0',
+        version: '0.2.0',
+        notes: '修复下载问题\n<img src=x onerror=alert(1)>',
+        published_at: '2026-11-01T12:00:00Z',
+        can_install: canInstall,
+        download_size: 10 * 1024 * 1024,
+        installer_kind: installerKind
+      }
+    },
+    { canInstall, installerKind }
+  )
 }
+
+for (const platform of ['windows', 'macos'] as const) {
+  test(`image protocol preserves URLs and absolute local paths on ${platform}`, async ({
+    page
+  }) => {
+    await fixture(page, true, platform)
+    await page.goto('/settings')
+    const urls = await page.evaluate(async () => {
+      const moduleUrl = '/src/stores/comic.ts'
+      const { useComicStore } = await import(moduleUrl)
+      const store = useComicStore()
+      const remote = 'https://pika.test/封面%20一.png?token=a%2Fb'
+      const local = '/Volumes/Books/漫画/100%20/第 1 页.png'
+      return {
+        cover: store.getThumbUrl({ thumb: { path: remote, fileServer: '' } }),
+        avatar: store.getAvatarUrl({ path: remote, fileServer: '' }),
+        local: store.getImageUrl({ localPath: local })
+      }
+    })
+    const prefix = platform === 'windows' ? 'http://pikaimg.localhost/' : 'pikaimg://localhost/'
+    for (const url of Object.values(urls)) expect(url.startsWith(prefix)).toBe(true)
+    expect(decodeURIComponent(urls.cover.slice(prefix.length))).toBe(
+      'remote/https://pika.test/封面%20一.png?token=a%2Fb'
+    )
+    expect(urls.avatar).toBe(urls.cover)
+    expect(decodeURIComponent(urls.local.slice(prefix.length))).toBe(
+      'local//Volumes/Books/漫画/100%20/第 1 页.png'
+    )
+  })
+}
+
+test('Mac update opens a verified DMG and explains the Applications replacement step', async ({
+  page
+}) => {
+  await fixture(page, true, 'macos')
+  await page.goto('/settings')
+  await availableUpdate(page, true, 'macos')
+  await page.getByRole('button', { name: '检查更新', exact: true }).click()
+  await expect(page.locator('.app-updates')).toContainText('Applications 文件夹并替换旧版')
+  await page.getByRole('button', { name: /下载更新/ }).click()
+  await expect(page.getByRole('button', { name: '退出并打开安装包', exact: true })).toBeEnabled()
+  await expect(page.getByRole('button', { name: '退出并安装', exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: '退出并打开安装包', exact: true }).click()
+  await expect(page.getByRole('button', { name: '正在打开安装包…', exact: true })).toBeDisabled()
+  expect(
+    await page.evaluate(() =>
+      (window as any).__calls.some((call: any) => call.cmd === 'install_update')
+    )
+  ).toBe(true)
+})
 
 test('update download survives navigation and only installs after an explicit click', async ({
   page

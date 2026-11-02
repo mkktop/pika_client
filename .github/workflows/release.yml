@@ -1,49 +1,51 @@
-name: Windows release
+name: Desktop release
 
 on:
   push:
-    tags:
-      - 'v[0-9]*'
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag with a successful desktop build
+        required: true
+        type: string
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   release:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
         with:
-          node-version: '24'
-          cache: npm
-      - uses: dtolnay/rust-toolchain@stable
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+      - name: Find the verified build for this source
+        id: build
+        uses: actions/github-script@v7
         with:
-          targets: x86_64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@v2
+          script: |
+            const { findVerifiedRun } = require('./scripts/release-artifacts.cjs');
+            const runId = await findVerifiedRun({ github, context, tag: process.env.RELEASE_TAG });
+            core.setOutput('run_id', runId);
+      - uses: actions/download-artifact@v4
         with:
-          workspaces: src-tauri -> target
-      - name: Check tag and application versions
-        shell: bash
-        run: node scripts/check-release-version.mjs "$GITHUB_REF_NAME"
-      - run: npm ci
-      - run: npm run build
-      - name: Test Rust backend
-        run: cargo test --locked --release --manifest-path src-tauri/Cargo.toml --lib
-      - name: Build and publish installer
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          pattern: '*-installer'
+          path: installers
+          run-id: ${{ steps.build.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify provenance and upload both installers
+        uses: actions/github-script@v7
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Pika Client ${{ github.ref_name }}
-          releaseBody: |
-            Windows x64 安装包。已有用户可在「偏好设置 → 软件更新」中检查、下载并安装。
-            安装会保留本地账号、设置和书库数据。
-          releaseDraft: true
-          prerelease: false
-          args: --target x86_64-pc-windows-msvc --bundles nsis
+          script: |
+            const { uploadInstallers } = require('./scripts/release-artifacts.cjs');
+            await uploadInstallers({ github, context, core, tag: process.env.RELEASE_TAG,
+              directory: 'installers', platforms: ['windows-x64', 'macos-universal'] });

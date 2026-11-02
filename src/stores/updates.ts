@@ -9,6 +9,7 @@ interface UpdateCheck {
   published_at: string | null
   can_install: boolean
   download_size: number | null
+  installer_kind: 'windows' | 'macos' | null
 }
 
 interface UpdateProgress {

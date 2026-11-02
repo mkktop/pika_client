@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { invoke } from '@tauri-apps/api/core'
+import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core'
 import { readPreference, writePreference } from '../utils/readerPreferences'
 
 const BLOCKED_TAGS_KEY = 'pika-blocked-tags'
@@ -8,10 +8,9 @@ const BLOCKED_SCOPES_KEY = 'pika-blocked-tag-scopes'
 /** 屏蔽标签可生效的列表作用域。 */
 export type BlockedTagScope = 'search' | 'home' | 'categories'
 
-// pikaimg 自定义协议的 webview 侧地址：Windows WebView2 要求走
-// http://<scheme>.localhost/ 形态才能进入协议处理器。
+// Tauri selects the platform's custom-protocol URL (WebView2 or WKWebView).
 function pikaimgUrl(kind: 'remote' | 'local', target: string): string {
-  return `http://pikaimg.localhost/${kind}/${encodeURIComponent(target)}`
+  return isTauri() ? convertFileSrc(`${kind}/${target}`, 'pikaimg') : target
 }
 
 export interface Comic {
