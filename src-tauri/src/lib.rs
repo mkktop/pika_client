@@ -3,11 +3,13 @@ mod category_policy;
 mod commands;
 mod db;
 mod download;
+mod updates;
 
 use commands::*;
 use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::RwLock;
+use updates::*;
 
 /// pikaimg:// 自定义协议：webview 图片统一走 Rust 侧，附带磁盘缓存。
 /// - pikaimg://remote/<编码后的远程URL>：缓存于 app_cache_dir/imgcache（按 URL 哈希分桶），
@@ -247,6 +249,8 @@ fn evict_cache(root: &std::path::Path, used: &std::sync::atomic::AtomicU64, targ
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .manage(UpdateManager::default())
         .register_asynchronous_uri_scheme_protocol("pikaimg", |ctx, request, responder| {
             handle_pikaimg(ctx.app_handle().clone(), request, responder)
         })
@@ -354,6 +358,11 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            get_app_version,
+            check_for_updates,
+            download_update,
+            install_update,
+            open_update_release,
             login,
             is_logged_in,
             punch_in,

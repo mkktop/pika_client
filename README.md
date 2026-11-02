@@ -9,7 +9,7 @@
     <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-6-3178c6?style=flat-square&amp;logo=typescript&amp;logoColor=white" alt="TypeScript 6" /></a>
     <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-2024-ce8d61?style=flat-square&amp;logo=rust&amp;logoColor=white" alt="Rust 2024 Edition" /></a>
     <img src="https://img.shields.io/badge/Platform-Windows-5e8972?style=flat-square" alt="Windows" />
-    <img src="https://img.shields.io/badge/Version-0.1.0-d86e48?style=flat-square" alt="Version 0.1.0" />
+    <img src="https://img.shields.io/badge/Version-0.2.0-d86e48?style=flat-square" alt="Version 0.2.0" />
   </p>
   <p>
     <a href="#界面预览">界面预览</a> ·
@@ -54,7 +54,7 @@ Pika Client 基于 **Tauri 2、Vue 3、TypeScript 和 Rust**，将漫画发现�
 | 作品详情       | 章节目录、收藏、点赞、相关推荐、评论浏览，分类标签直达                       |
 | 在线阅读       | 滚动 / 翻页模式、三档阅读宽度、页码跳转、进度记忆、继续阅读、沉浸模式        |
 | 下载与本地书库 | 章节下载队列、图片并发下载、自动刷新进度、完成 / 失败状态、本地记录与统计    |
-| 设置           | 自定义下载目录、HTTP / SOCKS5 代理、原始 / 均衡 / 轻量画质，外观偏好自动保存 |
+| 设置           | 自定义下载目录、HTTP / SOCKS5 代理、原始 / 均衡 / 轻量画质，外观偏好自动保存；检查更新、下载并安装新版 |
 
 登录状态保存在本机，后续启动会恢复已保存的 token。阅读模式、宽度、进度和界面偏好也会在本地记忆。
 
@@ -127,6 +127,22 @@ npm run tauri build -- --no-bundle
 ```
 
 仓库中的跨平台图标资源不代表对应平台已经完成适配；macOS、Linux 和移动端尚未列入当前验证范围。
+
+### 检查更新与升级
+
+在「偏好设置 → 软件更新」点击「检查更新」，客户端会读取本仓库 GitHub Releases 的最新正式版本，展示版本号、发布时间和更新说明。检查与安装包下载共用应用内的代理设置；未发布版本、网络错误和请求限流会分别提示，不会误报为已是最新版。
+
+Windows x64 / ARM64 在有匹配的 NSIS 安装包且 GitHub 提供 SHA-256 摘要时，可点击「下载更新」，查看下载进度。下载完成后先校验文件大小与摘要；点击「退出并安装」会再次校验、退出客户端并打开安装向导。若有正在进行或排队的漫画下载，会提示等待下载完成。升级保留现有应用数据；安装完成后重新打开客户端即可。
+
+下载过程中切换页面不会中断更新。校验失败的文件不会执行，可重新检查并下载。没有适配安装包或缺少摘要时，使用「前往发布页」在系统浏览器中手动下载；非 Windows 平台也使用这个入口。更新说明按纯文本展示。
+
+### 发布供客户端检测的新版本
+
+1. 将 `package.json`、`package-lock.json`（包括根包条目）、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 和 `src-tauri/Cargo.lock` 中的应用版本同步为新的语义化版本，例如 `0.2.0`。
+2. 提交并推送代码，再推送对应标签，例如 `v0.2.0`。可先运行 `node scripts/check-release-version.mjs v0.2.0` 检查版本是否一致。
+3. `Windows release` 工作流会运行 Rust 测试、构建前端和 Windows x64 NSIS 安装包，并上传到 **Release 草稿**。在 GitHub 补充更新说明、确认附件上传完整后发布草稿。
+
+客户端只检测已发布的正式 Release，不检测草稿或预发布版本；比较语义化版本（例如 `0.10.0` 高于 `0.9.0`），不以标签字符串或提交时间判断升级。GitHub 上传附件时生成的 `sha256:` 摘要用于校验，无需额外配置更新签名密钥。当前工作流生成 Windows x64 安装包；其他架构需另行构建对应安装包。
 
 ## 使用与快捷键
 
