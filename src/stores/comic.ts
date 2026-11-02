@@ -9,6 +9,7 @@ export interface Comic {
   epsCount?: number
   finished?: boolean
   categories: string[]
+  tags?: string[]
   thumb?: { path: string; fileServer: string }
   likesCount?: number
   viewsCount?: number
@@ -230,6 +231,23 @@ export const useComicStore = defineStore('comic', {
         () =>
           invoke<{ docs: Comic[]; pages?: number }>('search_comics', {
             req: { keyword, page, sort }
+          }),
+        (data) => {
+          this.searchResults = data.docs
+          this.searchPage = page
+          this.searchPages = data.pages || (data.docs.length ? page + 1 : page)
+        }
+      )
+    },
+    // 标签精确过滤（t= 链路）：结果与关键词搜索共用一套分页状态。
+    async searchByTag(tag: string, page: number, sort: string) {
+      if (page === 1) this.searchResults = []
+      await this.loadResource(
+        () =>
+          invoke<{ docs: Comic[]; pages?: number }>('get_comics_by_tag', {
+            page,
+            tag,
+            sort
           }),
         (data) => {
           this.searchResults = data.docs

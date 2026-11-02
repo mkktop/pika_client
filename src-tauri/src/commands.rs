@@ -238,6 +238,46 @@ pub async fn get_comics_by_category(
     serde_json::to_value(comics).map_err(|e| e.to_string())
 }
 
+/// 按标签精确过滤（comics?t=，无结果窗口上限），用于搜索页“标签”模式与详情页标签跳转。
+#[tauri::command]
+pub async fn get_comics_by_tag(
+    state: State<'_, AppState>,
+    page: i64,
+    tag: String,
+    sort: String,
+) -> Result<serde_json::Value, String> {
+    let tag = tag.trim().to_string();
+    if tag.is_empty() {
+        return Err("标签不能为空".to_string());
+    }
+    if !crate::category_policy::is_supported_category(&tag) {
+        return Err("该标签不可用".to_string());
+    }
+    let sort = match sort.as_str() {
+        "da" | "ld" | "vd" => sort.as_str(),
+        _ => "dd",
+    };
+    let mut comics = state
+        .client
+        .comics_by_tag(page.max(1), &tag, sort)
+        .await
+        .map_err(|e| e.to_string())?;
+    log::info!(
+        "tag filter '{}': total={} pages={} docs={}",
+        tag,
+        comics.total,
+        comics.pages,
+        comics.docs.len()
+    );
+    comics.docs.retain(|comic| {
+        comic
+            .categories
+            .iter()
+            .all(|title| crate::category_policy::is_supported_category(title))
+    });
+    serde_json::to_value(comics).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn get_latest_comics(
     state: State<'_, AppState>,

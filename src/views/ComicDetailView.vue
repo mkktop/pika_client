@@ -15,6 +15,7 @@ const store = useComicStore()
 const comicId = String(route.params.id)
 const comic = computed(() => (store.currentComic?._id === comicId ? store.currentComic : null))
 const categories = computed(() => comic.value?.categories.filter(isSupportedCategory) || [])
+const tags = computed(() => comic.value?.tags || [])
 const downloading = ref<number[]>([])
 const queued = ref<number[]>([])
 const downloadedOrders = ref(new Set<number>())
@@ -231,6 +232,18 @@ const count = (n = 0) => (n >= 10000 ? (n / 10000).toFixed(1) + '万' : n.toLoca
               @click="router.push({ name: 'categories', query: { category: cat } })"
             >
               {{ cat }}
+            </button>
+          </div>
+          <div v-if="tags.length" class="categories detail-tags">
+            <button
+              v-for="tag in tags"
+              :key="tag"
+              class="tag tag-chip"
+              style="border: 0"
+              :title="'按标签「' + tag + '」浏览（无结果数上限）'"
+              @click="router.push({ name: 'search', query: { tag } })"
+            >
+              # {{ tag }}
             </button>
           </div>
           <p v-if="comic.description" class="description">{{ comic.description }}</p>

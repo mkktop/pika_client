@@ -109,6 +109,7 @@ pub fn run() {
             search_comics,
             get_categories,
             get_comics_by_category,
+            get_comics_by_tag,
             get_latest_comics,
             get_comic_info,
             get_episodes,

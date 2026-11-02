@@ -345,6 +345,21 @@ impl PicaClient {
         Ok(resp.comics)
     }
 
+    /// 标签精确过滤列表（comics?t=）。与分类链路同源，无 1 万条结果窗口。
+    pub async fn comics_by_tag(
+        &self,
+        page: i64,
+        tag: &str,
+        sort: &str,
+    ) -> Result<ComicList, PicaError> {
+        let encoded = urlencoding::encode(tag);
+        let path = format!("comics?page={}&s={}&t={}", page, sort, encoded);
+        let resp: ComicsData = self
+            .request(reqwest::Method::GET, &path, None)
+            .await?;
+        Ok(resp.comics)
+    }
+
     pub async fn latest_comics(&self, page: i64) -> Result<ComicList, PicaError> {
         let path = format!("comics?page={}&s=dd", page);
         let resp: ComicsData = self.request(reqwest::Method::GET, &path, None).await?;

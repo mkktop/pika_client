@@ -12,7 +12,10 @@ const router = useRouter()
 
 defineOptions({ name: 'SearchView' })
 const store = useComicStore()
-const keyword = ref(String(route.query.q || ''))
+// 两种模式：keyword 走全文搜索（每次查询上限 1 万条）；tag 走 t= 精确过滤（无上限）。
+type SearchMode = 'keyword' | 'tag'
+const mode = ref<SearchMode>(route.query.tag ? 'tag' : 'keyword')
+const keyword = ref(String(route.query.tag || route.query.q || ''))
 const sort = ref('dd')
 const page = ref(1)
 const searched = ref(false)
@@ -29,25 +32,50 @@ async function doSearch() {
   searched.value = true
   submittedKeyword.value = keyword.value.trim()
   page.value = 1
-  await store.search(keyword.value.trim(), 1, sort.value)
+  if (mode.value === 'tag') {
+    await store.searchByTag(submittedKeyword.value, 1, sort.value)
+  } else {
+    await store.search(submittedKeyword.value, 1, sort.value)
+  }
 }
 async function goToPage(target: number) {
   if (store.loading) return
   page.value = target
   resultsTop.value?.scrollIntoView({ behavior: 'instant', block: 'start' })
-  await store.search(submittedKeyword.value, target, sort.value)
+  if (mode.value === 'tag') {
+    await store.searchByTag(submittedKeyword.value, target, sort.value)
+  } else {
+    await store.search(submittedKeyword.value, target, sort.value)
+  }
 }
 function retry() {
-  store.search(submittedKeyword.value, page.value, sort.value)
+  if (mode.value === 'tag') {
+    store.searchByTag(submittedKeyword.value, page.value, sort.value)
+  } else {
+    store.search(submittedKeyword.value, page.value, sort.value)
+  }
 }
 function chooseKeyword(kw: string) {
   keyword.value = kw
+  mode.value = 'keyword'
   doSearch()
 }
+function switchMode(next: SearchMode) {
+  if (mode.value === next) return
+  mode.value = next
+  searched.value = false
+  submittedKeyword.value = ''
+  store.searchResults = []
+  store.error = null
+}
 watch(
-  () => route.query.q,
-  (q) => {
-    if (q && String(q) !== keyword.value) {
+  () => [route.query.q, route.query.tag],
+  ([q, t]) => {
+    if (t && String(t) !== keyword.value) {
+      mode.value = 'tag'
+      keyword.value = String(t)
+      doSearch()
+    } else if (q && mode.value === 'keyword' && String(q) !== keyword.value) {
       keyword.value = String(q)
       doSearch()
     }
@@ -66,18 +94,40 @@ onMounted(() => {
       <div>
         <div class="eyebrow">SEARCH · PIKA COMICS</div>
         <h1>搜索与探索</h1>
-        <p>按漫画名称、作者或关键词搜索。</p>
+        <p>按关键词全文搜索，或用标签精确过滤（标签无结果数上限）。</p>
       </div>
       <router-link to="/categories" class="btn btn-secondary btn-sm"
         ><AppIcon name="grid" :size="14" />分类浏览</router-link
       >
+    </div>
+    <div class="search-modes" role="tablist" aria-label="搜索方式">
+      <button
+        type="button"
+        role="tab"
+        :aria-selected="mode === 'keyword'"
+        :class="{ active: mode === 'keyword' }"
+        @click="switchMode('keyword')"
+      >
+        关键词
+      </button>
+      <button
+        type="button"
+        role="tab"
+        :aria-selected="mode === 'tag'"
+        :class="{ active: mode === 'tag' }"
+        @click="switchMode('tag')"
+      >
+        标签
+      </button>
     </div>
     <form class="search-panel" @submit.prevent="doSearch">
       <div class="search-field">
         <AppIcon name="search" :size="22" /><input
           v-model="keyword"
           aria-label="搜索关键词"
-          placeholder="输入漫画名称、作者或关键词"
+          :placeholder="
+            mode === 'tag' ? '输入完整标签名，如：全彩、純愛、原神' : '输入漫画名称、作者或关键词'
+          "
         /><button
           v-if="keyword"
           type="button"
@@ -99,10 +149,10 @@ onMounted(() => {
           {{ opt.label }}
         </option></select
       ><button class="btn btn-primary" :disabled="store.loading || !keyword.trim()">
-        搜索漫画 <AppIcon name="arrow" :size="15" />
+        {{ mode === 'tag' ? '按标签查找' : '搜索漫画' }} <AppIcon name="arrow" :size="15" />
       </button>
     </form>
-    <div v-if="store.keywords.length" class="hot-keywords">
+    <div v-if="mode === 'keyword' && store.keywords.length" class="hot-keywords">
       <span><AppIcon name="trend" :size="15" /> 大家在搜</span
       ><button
         v-for="kw in store.keywords.slice(0, 14)"
@@ -116,11 +166,14 @@ onMounted(() => {
     </div>
     <div v-if="searched" ref="resultsTop" class="section-heading search-results-heading">
       <h2>
-        搜索结果<small v-if="!store.loading && store.searchPages > 1"
+        {{ mode === 'tag' ? '标签结果' : '搜索结果'
+        }}<small v-if="!store.loading && store.searchPages > 1"
           >第 {{ store.searchPage }} / {{ store.searchPages }} 页</small
         >
       </h2>
-      <span class="header-note">按所选方式排序</span>
+      <span class="header-note">{{
+        mode === 'tag' ? `精确匹配标签「${submittedKeyword}」` : '按所选方式排序'
+      }}</span>
     </div>
     <ComicSkeleton v-if="store.loading && !store.searchResults.length" />
     <EmptyState
@@ -148,15 +201,23 @@ onMounted(() => {
     </template>
     <EmptyState
       v-else-if="searched"
-      title="没有找到相关漫画"
-      description="试试更短的关键词，或者换一位作者搜索。"
+      :title="mode === 'tag' ? '没有命中这个标签' : '没有找到相关漫画'"
+      :description="
+        mode === 'tag'
+          ? '标签需要精确匹配完整名称，可以从漫画详情页点击标签进入。'
+          : '试试更短的关键词，或者换一位作者搜索。'
+      "
       icon="search"
     />
     <div v-else class="search-welcome">
       <div class="search-welcome-art"><AppIcon name="search" :size="42" /><span>?</span></div>
-      <h2>想看什么，搜一下。</h2>
-      <p>输入关键词开始搜索，也可以点击上方热门搜索词。</p>
-      <span class="eyebrow">SEARCH BY TITLE · AUTHOR · KEYWORD</span>
+      <h2>{{ mode === 'tag' ? '按标签浏览全部作品。' : '想看什么，搜一下。' }}</h2>
+      <p>{{
+        mode === 'tag'
+          ? '输入完整标签名开始过滤，也可以从漫画详情页点击标签跳转过来。'
+          : '输入关键词开始搜索，也可以点击上方热门搜索词。'
+      }}</p>
+      <span class="eyebrow">{{ mode === 'tag' ? 'FILTER BY TAG · EXACT MATCH' : 'SEARCH BY TITLE · AUTHOR · KEYWORD' }}</span>
     </div>
   </div>
 </template>

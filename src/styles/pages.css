@@ -369,6 +369,25 @@
   letter-spacing: 1px;
 }
 /* Search / collections */
+.search-modes {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+}
+.search-modes button {
+  padding: 7px 15px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  border-radius: 7px;
+}
+.search-modes button.active {
+  color: var(--accent);
+  background: var(--bg-card);
+}
 .search-panel {
   display: flex;
   gap: 13px;
@@ -980,6 +999,17 @@
   color: var(--text-secondary);
   background: var(--bg-secondary);
   border-radius: 4px;
+}
+.detail-tags {
+  margin-top: 6px;
+}
+.detail-tags .tag-chip {
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: color 0.15s ease;
+}
+.detail-tags .tag-chip:hover {
+  color: var(--accent);
 }
 .description {
   color: var(--text-secondary);
