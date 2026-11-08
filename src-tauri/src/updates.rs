@@ -411,17 +411,33 @@ pub async fn install_update(
     drop(file);
     match pending.kind {
         InstallerKind::Windows if cfg!(target_os = "windows") => {
-            std::process::Command::new(path)
-                .spawn()
-                .map_err(|_| "无法启动安装程序，请重试或前往发布页手动安装")?;
+            use std::os::windows::process::CommandExt;
+            const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            const DETACHED_PROCESS: u32 = 0x0000_0008;
+            // WebView2 会把宿主进程挂进带 kill-on-close 的 Job 对象；安装器作为子进程
+            // 会一并入组，应用退出时会被连带杀掉（安装向导一闪而过/直接消失）。
+            // 先尝试让安装器脱离 Job 独立运行，环境不允许脱离时退回普通启动。
+            let spawn = |flags: u32| {
+                std::process::Command::new(path)
+                    .creation_flags(flags)
+                    .spawn()
+                    .map(|_| ())
+            };
+            let detached = CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS;
+            spawn(detached)
+                .or_else(|_| spawn(0))
+                .map_err(|e| e.to_string())
         }
-        InstallerKind::Macos if cfg!(target_os = "macos") => {
-            app.opener()
-                .open_path(path.to_string_lossy().into_owned(), None::<&str>)
-                .map_err(|_| "无法打开安装包，请重试或前往发布页手动安装")?;
-        }
+        InstallerKind::Macos if cfg!(target_os = "macos") => app
+            .opener()
+            .open_path(path.to_string_lossy().into_owned(), None::<&str>)
+            .map_err(|e| e.to_string()),
         _ => return Err("安装包与当前系统不匹配，请重新检查更新".to_string()),
     }
+    .map_err(|_| "无法启动安装程序，请重试或前往发布页手动安装")?;
+    // 给安装向导留出完成初始化的时间，再退出本应用（升级必须先关掉正在运行的 app.exe）。
+    tokio::time::sleep(Duration::from_millis(1500)).await;
     app.exit(0);
     Ok(())
 }
