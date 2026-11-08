@@ -352,6 +352,33 @@
   color: var(--text-muted);
   margin-top: 24px;
 }
+.remember-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.remember-row input {
+  accent-color: var(--accent, #4a6b57);
+  width: 15px;
+  height: 15px;
+}
+.login-library-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 14px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+.login-library-link:hover {
+  color: var(--text-primary);
+}
 .login-theme {
   position: absolute;
   right: 26px;

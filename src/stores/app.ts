@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from '../utils/invoke'
 
 function preference(key: string, fallback: string) {
   try {
@@ -34,11 +34,11 @@ export const useAppStore = defineStore('app', {
       }
       return this.isLoggedIn
     },
-    async login(account: string, password: string) {
+    async login(account: string, password: string, remember = true) {
       this.isLoading = true
       try {
         // The Pica API accepts both username and email in the `email` field.
-        await invoke<string>('login', { req: { email: account, password } })
+        await invoke<string>('login', { req: { email: account, password, remember } })
         this.isLoggedIn = true
         return true
       } catch (e) {
@@ -46,6 +46,18 @@ export const useAppStore = defineStore('app', {
       } finally {
         this.isLoading = false
       }
+    },
+    async logout() {
+      try {
+        await invoke('logout')
+      } finally {
+        // 即使后端清理失败也回到登录页：本地 token 已视为不可用。
+        this.isLoggedIn = false
+      }
+    },
+    /** 会话失效（token 过期且无法自动重登）时由全局事件触发。 */
+    sessionExpired() {
+      this.isLoggedIn = false
     },
     async loadDownloadDir() {
       try {

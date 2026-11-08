@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
-import { Channel, invoke } from '@tauri-apps/api/core'
+import { Channel } from '@tauri-apps/api/core'
+import { invoke } from '../utils/invoke'
 
 interface UpdateCheck {
   status: 'available' | 'current' | 'unpublished'

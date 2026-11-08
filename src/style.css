@@ -492,6 +492,11 @@ kbd {
   border-color: var(--accent);
   color: var(--accent);
 }
+/* 两步确认态的警示色（如退出登录按钮）。 */
+.btn.danger {
+  border-color: #c0392b;
+  color: #c0392b;
+}
 .btn-sm {
   min-height: 32px;
   padding: 7px 12px;

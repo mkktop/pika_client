@@ -1,21 +1,30 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
+import { useAppStore } from '../stores/app'
 
 const routes: RouteRecordRaw[] = [
   {
+    path: '/login',
+    name: 'login',
+    component: () => import('../views/LoginView.vue')
+  },
+  {
     path: '/categories',
     name: 'categories',
-    component: () => import('../views/CategoriesView.vue')
+    component: () => import('../views/CategoriesView.vue'),
+    meta: { requiresAuth: true }
   },
   {
     path: '/',
     name: 'home',
-    component: () => import('../views/HomeView.vue')
+    component: () => import('../views/HomeView.vue'),
+    meta: { requiresAuth: true }
   },
   {
     path: '/search',
     name: 'search',
-    component: () => import('../views/SearchView.vue')
+    component: () => import('../views/SearchView.vue'),
+    meta: { requiresAuth: true }
   },
   {
     path: '/comic/:id',
@@ -30,7 +39,8 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/favorites',
     name: 'favorites',
-    component: () => import('../views/FavoritesView.vue')
+    component: () => import('../views/FavoritesView.vue'),
+    meta: { requiresAuth: true }
   },
   {
     path: '/downloads',
@@ -52,6 +62,21 @@ const routes: RouteRecordRaw[] = [
 const router = createRouter({
   history: createWebHistory(),
   routes
+})
+
+/**
+ * 登录门禁只拦纯在线页面；本地书库、下载管理、阅读器、设置离线可用。
+ * 未登录的默认落地页是本地书库（纯本地数据），登录页留有跳转入口。
+ */
+router.beforeEach((to) => {
+  const auth = useAppStore()
+  if (to.name === 'login') return auth.isLoggedIn ? { path: '/' } : true
+  // 未登录不落在线首页，改去本地书库。
+  if (!auth.isLoggedIn && to.path === '/') return { path: '/library' }
+  if (to.meta.requiresAuth && !auth.isLoggedIn) {
+    return { path: '/login', query: { redirect: to.fullPath } }
+  }
+  return true
 })
 
 export default router

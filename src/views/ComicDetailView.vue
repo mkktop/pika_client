@@ -2,7 +2,7 @@
 import { onMounted, onUnmounted, computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useComicStore, type Episode } from '../stores/comic'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from '../utils/invoke'
 import ComicCard from '../components/ComicCard.vue'
 import AppIcon from '../components/AppIcon.vue'
 import EmptyState from '../components/EmptyState.vue'

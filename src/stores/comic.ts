@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
-import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core'
+import { convertFileSrc, isTauri } from '@tauri-apps/api/core'
+import { invoke } from '../utils/invoke'
 import { readPreference, writePreference } from '../utils/readerPreferences'
 
 const BLOCKED_TAGS_KEY = 'pika-blocked-tags'
@@ -22,7 +23,7 @@ export interface Comic {
   finished?: boolean
   categories: string[]
   tags?: string[]
-  thumb?: { path: string; fileServer: string }
+  thumb?: { path: string; fileServer: string; localPath?: string }
   likesCount?: number
   viewsCount?: number
   isFavourite?: boolean
@@ -391,9 +392,13 @@ export const useComicStore = defineStore('comic', {
       if (path.startsWith('http://') || path.startsWith('https://')) return path
       return pic.media.fileServer.replace(/\/$/, '') + '/static/' + path
     },
-    getThumbUrl(comic: Comic): string {
-      if (!comic.thumb) return ''
-      const path = comic.thumb.path
+  getThumbUrl(comic: Comic): string {
+    // 离线回退的详情：封面直接走本地文件。
+    if (comic.thumb?.localPath) {
+      return pikaimgUrl('local', comic.thumb.localPath)
+    }
+    if (!comic.thumb) return ''
+    const path = comic.thumb.path
       const url =
         path.startsWith('http://') || path.startsWith('https://')
           ? path

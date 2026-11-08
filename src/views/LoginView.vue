@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '../stores/app'
 import AppIcon from '../components/AppIcon.vue'
 import ReadingArtwork from '../components/ReadingArtwork.vue'
 import BrandMark from '../components/BrandMark.vue'
+const route = useRoute()
 const router = useRouter()
 const app = useAppStore()
 const account = ref('')
 const password = ref('')
+const remember = ref(true)
 const visible = ref(false)
 const error = ref('')
 async function handleLogin() {
@@ -19,9 +21,10 @@ async function handleLogin() {
   }
   error.value = ''
   try {
-    await app.login(account.value.trim(), password.value)
+    await app.login(account.value.trim(), password.value, remember.value)
     password.value = ''
-    router.push('/')
+    const redirect = String(route.query.redirect || '')
+    router.push(redirect.startsWith('/') ? redirect : '/')
   } catch (e) {
     error.value = String(e)
   }
@@ -52,6 +55,9 @@ async function handleLogin() {
         <span class="eyebrow">SIGN IN TO PIKA</span>
         <h2>欢迎回来。</h2>
         <p class="login-intro">登录哔咔账号，同步收藏，浏览和下载漫画。</p>
+        <div v-if="route.query.expired" role="status" class="notice error">
+          <AppIcon name="alert" :size="16" />登录已过期，请重新登录；本地书库和已下载的漫画不受影响。
+        </div>
         <form class="login-form" @submit.prevent="handleLogin">
           <div class="form-field">
             <label for="account">账号</label>
@@ -90,6 +96,10 @@ async function handleLogin() {
               </button>
             </div>
           </div>
+          <label class="remember-row">
+            <input v-model="remember" type="checkbox" />
+            <span>记住密码，过期自动重登</span>
+          </label>
           <div v-if="error" role="alert" class="notice error">
             <AppIcon name="alert" :size="16" />{{ error }}
           </div>
@@ -100,8 +110,17 @@ async function handleLogin() {
           </button>
         </form>
         <div class="login-help">
-          <AppIcon name="lock" :size="13" /><span>登录状态会保存在本机，下次打开即可阅读。</span>
+          <AppIcon name="lock" :size="13" />
+          <span>{{
+            remember
+              ? '密码只保存在本机系统凭据库（Windows 凭据管理器），退出登录即清除。'
+              : '不记住密码：token 过期后需重新登录。'
+          }}</span>
         </div>
+        <router-link to="/library" class="login-library-link">
+          先逛逛本地书库<template v-if="!app.isLoggedIn"> · 不登录也能看已下载的漫画</template>
+          <AppIcon name="arrow" :size="14" />
+        </router-link>
       </div>
       <footer class="login-panel-footer">
         <span>PIKA DESKTOP</span><span>哔咔漫画桌面客户端</span>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { useRouter } from 'vue-router'
+import { invoke } from '../utils/invoke'
 import { useAppStore } from '../stores/app'
 import { useComicStore, type BlockedTagScope } from '../stores/comic'
 import AppIcon from '../components/AppIcon.vue'
@@ -10,6 +11,7 @@ import { useUpdateStore } from '../stores/updates'
 const app = useAppStore()
 const updates = useUpdateStore()
 const comic = useComicStore()
+const router = useRouter()
 const blockInput = ref('')
 function addBlocked() {
   const value = blockInput.value.trim()
@@ -95,12 +97,47 @@ const qualityOptions = [
   { value: 'lower', label: '均衡画质', note: '清晰与速度兼顾' },
   { value: 'lowest', label: '轻量画质', note: '更快加载，更省流量' }
 ]
+const authStatus = ref<{ logged_in: boolean; saved_account: string | null }>({
+  logged_in: false,
+  saved_account: null
+})
+const loggingOut = ref(false)
+const confirmLogout = ref(false)
+let confirmTimer: number | undefined
+async function loadAuthStatus() {
+  try {
+    authStatus.value = await invoke<{ logged_in: boolean; saved_account: string | null }>(
+      'get_auth_status'
+    )
+  } catch {
+    // 状态拉不到时保持默认展示
+  }
+}
+/** 两步确认退出：第一次点击进入确认态，5 秒内再点一次才真正退出。 */
+async function handleLogout() {
+  if (loggingOut.value) return
+  if (!confirmLogout.value) {
+    confirmLogout.value = true
+    confirmTimer = window.setTimeout(() => (confirmLogout.value = false), 5000)
+    return
+  }
+  window.clearTimeout(confirmTimer)
+  loggingOut.value = true
+  try {
+    await app.logout()
+  } finally {
+    loggingOut.value = false
+    confirmLogout.value = false
+    router.push('/login')
+  }
+}
 onMounted(async () => {
   await app.loadDownloadDir()
   downloadDir.value = app.downloadDir
   const results = await Promise.allSettled([
     invoke<string | null>('get_proxy'),
     invoke<string>('get_image_quality'),
+    loadAuthStatus(),
     loadCacheStatus()
   ])
   if (results[0].status === 'fulfilled') proxy.value = results[0].value || ''
@@ -499,9 +536,27 @@ async function save(kind: string) {
           </div>
           <span class="header-note"
             ><span class="status-dot" />{{
-              app.isLoggedIn ? '已登录 · 登录状态保存在本机' : '尚未登录'
+              app.isLoggedIn
+                ? authStatus.saved_account
+                  ? `已登录 · 已记住密码（${authStatus.saved_account}），过期自动重登`
+                  : '已登录 · 未记住密码，token 过期后需重新登录'
+                : '尚未登录 · 本地书库与已下载漫画仍可阅读'
             }}</span
           >
+          <div class="setting-actions">
+            <button
+              v-if="app.isLoggedIn"
+              class="btn btn-secondary btn-sm"
+              :class="{ danger: confirmLogout }"
+              :disabled="loggingOut"
+              @click="handleLogout"
+            >
+              {{ loggingOut ? '退出中…' : confirmLogout ? '再点一次确认退出' : '退出登录' }}</button
+            ><button v-else class="btn btn-secondary btn-sm" @click="router.push('/login')">
+              去登录
+            </button>
+          </div>
+          <p class="hint">哔咔 token 有效期 7 天；记住密码后过期会自动重登。退出登录会同时清除本机保存的密码。</p>
         </section>
         <AppUpdates />
       </div>

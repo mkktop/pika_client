@@ -1,6 +1,7 @@
 mod api;
 mod category_policy;
 mod commands;
+mod credentials;
 mod db;
 mod download;
 mod image_protocol;
@@ -271,11 +272,19 @@ pub fn run() {
                 Ok::<_, sqlx::Error>((Arc::new(db), download_dir, proxy, token))
             })?;
 
-            let client = Arc::new(api::PicaClient::new());
+            let client = Arc::new(api::PicaClient::new(db.clone()));
             if let Some(p) = proxy.filter(|p| !p.trim().is_empty()) {
                 tauri::async_runtime::block_on(client.set_proxy(Some(p))).ok();
             }
             tauri::async_runtime::block_on(client.set_token(token));
+            // 恢复本机保存的登录凭据（系统凭据库），token 过期时自动重登。
+            if let Ok(Some(account)) = tauri::async_runtime::block_on(db.get_setting("login_account")) {
+                if let Ok(Some(password)) = credentials::load(&account) {
+                    tauri::async_runtime::block_on(
+                        client.set_credentials(Some((account, password))),
+                    );
+                }
+            }
             if let Ok(Some(q)) = tauri::async_runtime::block_on(db.get_setting("image_quality")) {
                 tauri::async_runtime::block_on(client.set_image_quality(&q));
             }
@@ -344,6 +353,8 @@ pub fn run() {
             install_update,
             open_update_release,
             login,
+            logout,
+            get_auth_status,
             is_logged_in,
             punch_in,
             get_leaderboard,

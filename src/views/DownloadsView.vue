@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onActivated, onDeactivated, ref, computed, watch } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from '../utils/invoke'
 import { useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
 import EmptyState from '../components/EmptyState.vue'

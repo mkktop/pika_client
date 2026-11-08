@@ -1,9 +1,10 @@
 use super::models::*;
 use super::signature;
+use crate::db::Database;
 use reqwest::Client;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 const API_BASE: &str = "https://picaapi.picacomic.com/";
 const API_KEY: &str = "C69BAF41DA5ABD1FFEDC6D2FEA56B";
@@ -16,6 +17,9 @@ pub enum PicaError {
     Api { code: i32, message: String },
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+    /// 会话失效且无法自动重登。前缀由前端统一识别：清除登录态并引导重新登录。
+    #[error("AUTH_REQUIRED:登录已过期，请重新登录")]
+    AuthRequired,
 }
 
 pub struct PicaClient {
@@ -23,6 +27,13 @@ pub struct PicaClient {
     token: Arc<RwLock<Option<String>>>,
     proxy: Arc<RwLock<Option<String>>>,
     image_quality: Arc<RwLock<String>>,
+    /// 本机保存的登录凭据（内存副本，落盘在系统凭据库），token 过期时自动重登用。
+    credentials: Arc<RwLock<Option<(String, String)>>>,
+    /// 重登单飞锁：并发 401 只触发一次重新登录。
+    relogin_lock: Arc<Mutex<()>>,
+    /// 重登成功后把新 token 持久化回 settings 表。
+    db: Arc<Database>,
+    api_base: String,
 }
 
 fn build_client(proxy: Option<&str>) -> Result<Client, reqwest::Error> {
@@ -40,14 +51,42 @@ fn build_client(proxy: Option<&str>) -> Result<Client, reqwest::Error> {
 }
 
 impl PicaClient {
-    pub fn new() -> Self {
+    pub fn new(db: Arc<Database>) -> Self {
         let client = build_client(None).expect("Failed to build HTTP client");
         Self {
             client: Arc::new(RwLock::new(client)),
             token: Arc::new(RwLock::new(None)),
             proxy: Arc::new(RwLock::new(None)),
             image_quality: Arc::new(RwLock::new("original".into())),
+            credentials: Arc::new(RwLock::new(None)),
+            relogin_lock: Arc::new(Mutex::new(())),
+            db,
+            api_base: API_BASE.to_string(),
         }
+    }
+
+    #[cfg(test)]
+    fn with_api_base(db: Arc<Database>, api_base: &str) -> Self {
+        let mut client = Self {
+            api_base: api_base.to_string(),
+            ..Self::new(db)
+        };
+        // 本地 mock 强制直连，避免环境变量里的系统代理劫持 127.0.0.1 请求。
+        let direct = Client::builder()
+            .danger_accept_invalid_certs(true)
+            .timeout(Duration::from_secs(10))
+            .no_proxy()
+            .build()
+            .expect("Failed to build test HTTP client");
+        futures::executor::block_on(async {
+            *client.client.write().await = direct;
+        });
+        client
+    }
+
+    /// 设置（或清除）自动重登用的本机凭据。仅驻内存，落盘在系统凭据库。
+    pub async fn set_credentials(&self, credentials: Option<(String, String)>) {
+        *self.credentials.write().await = credentials;
     }
 
     /// Set (or clear) the proxy used for all API and image requests.
@@ -110,13 +149,15 @@ impl PicaClient {
         headers
     }
 
-    async fn request<T: for<'de> serde::Deserialize<'de>>(
+    /// 单次请求，不做任何会话恢复。401 的识别兼容两种形态：
+    /// 业务码 401（JSON body）和 HTTP 401（body 非 JSON 的网关响应）。
+    async fn request_raw<T: for<'de> serde::Deserialize<'de>>(
         &self,
         method: reqwest::Method,
         path: &str,
         body: Option<serde_json::Value>,
     ) -> Result<T, PicaError> {
-        let url = format!("{}{}", API_BASE, path);
+        let url = format!("{}{}", self.api_base, path);
         let headers = self.build_headers(method.as_str(), path).await;
 
         let client = self.client.read().await.clone();
@@ -126,10 +167,22 @@ impl PicaClient {
         }
 
         let resp = req.send().await?;
+        let status = resp.status();
         let text = resp.text().await?;
 
         let api_resp: ApiResponse<serde_json::Value> =
-            serde_json::from_str(&text).map_err(PicaError::Serialization)?;
+            match serde_json::from_str(&text) {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    if status == reqwest::StatusCode::UNAUTHORIZED {
+                        return Err(PicaError::Api {
+                            code: 401,
+                            message: "unauthorized".into(),
+                        });
+                    }
+                    return Err(PicaError::Serialization(e));
+                }
+            };
 
         if api_resp.code != 200 {
             return Err(PicaError::Api {
@@ -142,19 +195,64 @@ impl PicaClient {
         Ok(serde_json::from_value(data)?)
     }
 
-    pub async fn login(&self, email: &str, password: &str) -> Result<String, PicaError> {
+    /// token 过期时用本机保存的凭据重新登录。返回 true 表示已拿到新 token、可安全重试。
+    /// 拿单飞锁后先检查 token 是否已被其他请求刷新，避免排队者重复打登录接口。
+    async fn relogin_after_expiry(&self, stale_token: Option<String>) -> Result<bool, PicaError> {
+        let _guard = self.relogin_lock.lock().await;
+        let current = self.token.read().await.clone();
+        if current.is_some() && current != stale_token {
+            return Ok(true);
+        }
+        let Some((account, password)) = self.credentials.read().await.clone() else {
+            return Ok(false);
+        };
+        let token = self.login_raw(&account, &password).await?;
+        self.set_token(Some(token.clone())).await;
+        // 持久化失败只影响下次启动的会话恢复，当前会话照常工作。
+        let _ = self.db.set_setting("token", &token).await;
+        Ok(true)
+    }
+
+    /// 统一请求入口：401 时先自动重登（有保存凭据）再重试一次。
+    async fn request<T: for<'de> serde::Deserialize<'de>>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<T, PicaError> {
+        let token_before = self.token.read().await.clone();
+        match self.request_raw(method.clone(), path, body.clone()).await {
+            Err(PicaError::Api { code: 401, .. }) => match self.relogin_after_expiry(token_before).await
+            {
+                Ok(true) => self.request_raw(method, path, body).await,
+                Ok(false) => Err(PicaError::AuthRequired),
+                Err(relogin_error) => Err(match relogin_error {
+                    // 重登时密码被改/账号失效：统一按会话过期处理。
+                    PicaError::Api { code: 401, .. } => PicaError::AuthRequired,
+                    other => other,
+                }),
+            },
+            other => other,
+        }
+    }
+
+    async fn login_raw(&self, email: &str, password: &str) -> Result<String, PicaError> {
         let body = serde_json::json!({
             "email": email,
             "password": password,
         });
 
         let resp: LoginResponse = self
-            .request(reqwest::Method::POST, "auth/sign-in", Some(body))
+            .request_raw(reqwest::Method::POST, "auth/sign-in", Some(body))
             .await?;
 
         let token = resp.token;
         *self.token.write().await = Some(token.clone());
         Ok(token)
+    }
+
+    pub async fn login(&self, email: &str, password: &str) -> Result<String, PicaError> {
+        self.login_raw(email, password).await
     }
 
     pub async fn is_logged_in(&self) -> bool {
@@ -372,5 +470,202 @@ impl PicaClient {
         let resp = client.get(url).send().await?.error_for_status()?;
         let bytes = resp.bytes().await?;
         Ok(bytes.to_vec())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const VALID_PASSWORD: &str = "right-pass";
+    const TOKEN_STALE: &str = "token-stale";
+    const TOKEN_LIVE: &str = "token-refreshed";
+
+    /// 极简 HTTP mock：每个连接处理一个请求（Connection: close）。
+    /// sign-in 校验密码；受保护接口只认 TOKEN_LIVE，其余一律 401 —— 正是 token 过期的现场。
+    async fn spawn_mock(sign_ins: Arc<AtomicUsize>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let sign_ins = sign_ins.clone();
+                tokio::spawn(async move {
+                    let mut buffer = vec![0u8; 16384];
+                    let mut read = 0usize;
+                    loop {
+                        let count = socket.read(&mut buffer[read..]).await.unwrap_or(0);
+                        if count == 0 {
+                            break;
+                        }
+                        read += count;
+                        let Some(head_end) = buffer[..read]
+                            .windows(4)
+                            .position(|window| window == b"\r\n\r\n")
+                        else {
+                            continue;
+                        };
+                        let headers = String::from_utf8_lossy(&buffer[..head_end]);
+                        let body_len = headers
+                            .lines()
+                            .find_map(|line| {
+                                line.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .and_then(|value| value.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        if read >= head_end + 4 + body_len {
+                            break;
+                        }
+                    }
+                    let text = String::from_utf8_lossy(&buffer[..read]);
+                    let request_line = text.lines().next().unwrap_or("");
+                    let mut parts = request_line.split_whitespace();
+                    let path = parts.nth(1).unwrap_or("");
+                    let authorization = text.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.trim()
+                            .eq_ignore_ascii_case("authorization")
+                            .then(|| value.trim().to_string())
+                    });
+                    let body = text.split("\r\n\r\n").nth(1).unwrap_or("");
+
+                    let (status, payload) = if path.starts_with("/auth/sign-in") {
+                        if body.contains(VALID_PASSWORD) {
+                            sign_ins.fetch_add(1, Ordering::SeqCst);
+                            (
+                                200,
+                                format!(
+                                    r#"{{"code":200,"message":"ok","data":{{"token":"{TOKEN_LIVE}"}}}}"#
+                                ),
+                            )
+                        } else {
+                            (
+                                401,
+                                r#"{"code":401,"error":"1005","message":"unauthorized"}"#.to_string(),
+                            )
+                        }
+                    } else if authorization.as_deref() == Some(TOKEN_LIVE) {
+                        (
+                            200,
+                            r#"{"code":200,"message":"ok","data":{"value":"done"}}"#.to_string(),
+                        )
+                    } else {
+                        (
+                            401,
+                            r#"{"code":401,"error":"1005","message":"unauthorized"}"#.to_string(),
+                        )
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        status,
+                        if status == 200 { "OK" } else { "Unauthorized" },
+                        payload.len(),
+                        payload
+                    );
+                    socket.write_all(response.as_bytes()).await.ok();
+                });
+            }
+        });
+        format!("http://{address}/")
+    }
+
+    async fn mock_client(tag: &str, credentials: Option<(&str, &str)>) -> (Arc<PicaClient>, Arc<AtomicUsize>, std::path::PathBuf) {
+        let root =
+            std::env::temp_dir().join(format!("pika-client-test-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = Arc::new(
+            Database::new(&root.join("test.db").to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let sign_ins = Arc::new(AtomicUsize::new(0));
+        let base = spawn_mock(sign_ins.clone()).await;
+        let client = Arc::new(PicaClient::with_api_base(db, &base));
+        client
+            .set_credentials(credentials.map(|(a, p)| (a.to_string(), p.to_string())))
+            .await;
+        (client, sign_ins, root)
+    }
+
+    #[tokio::test]
+    async fn expired_token_relogins_retries_and_persists_the_fresh_token() {
+        let (client, sign_ins, root) = mock_client("relogin", Some(("reader", VALID_PASSWORD))).await;
+        client.set_token(Some(TOKEN_STALE.into())).await;
+
+        let value: serde_json::Value = client
+            .request(reqwest::Method::GET, "comics/test", None)
+            .await
+            .unwrap();
+        assert_eq!(value["value"], "done");
+        assert_eq!(client.token.read().await.as_deref(), Some(TOKEN_LIVE));
+        // 新 token 已写回 settings，重启后能恢复会话。
+        assert_eq!(
+            client.db.get_setting("token").await.unwrap().as_deref(),
+            Some(TOKEN_LIVE)
+        );
+        assert_eq!(sign_ins.load(Ordering::SeqCst), 1);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn expired_token_without_saved_credentials_demands_relogin() {
+        let (client, sign_ins, root) = mock_client("nocreds", None).await;
+        client.set_token(Some(TOKEN_STALE.into())).await;
+
+        let error = client
+            .request::<serde_json::Value>(reqwest::Method::GET, "comics/test", None)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, PicaError::AuthRequired));
+        assert!(error.to_string().starts_with("AUTH_REQUIRED:"));
+        assert_eq!(sign_ins.load(Ordering::SeqCst), 0);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn wrong_saved_password_surfaces_auth_required() {
+        let (client, sign_ins, root) = mock_client("badpw", Some(("reader", "wrong-pass"))).await;
+        client.set_token(Some(TOKEN_STALE.into())).await;
+
+        let error = client
+            .request::<serde_json::Value>(reqwest::Method::GET, "comics/test", None)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, PicaError::AuthRequired), "{error}");
+        // 错误密码永远登不进去：计数只统计成功的 sign-in。
+        assert_eq!(sign_ins.load(Ordering::SeqCst), 0);
+        // 二次过期仍按会话失效处理，不会反复打转。
+        let again = client
+            .request::<serde_json::Value>(reqwest::Method::GET, "comics/test", None)
+            .await
+            .unwrap_err();
+        assert!(matches!(again, PicaError::AuthRequired));
+        assert_eq!(sign_ins.load(Ordering::SeqCst), 0);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn concurrent_expired_requests_relogin_only_once() {
+        let (client, sign_ins, root) =
+            mock_client("singleflight", Some(("reader", VALID_PASSWORD))).await;
+        client.set_token(Some(TOKEN_STALE.into())).await;
+
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..3 {
+            let client = client.clone();
+            tasks.spawn(async move {
+                client
+                    .request::<serde_json::Value>(reqwest::Method::GET, "comics/test", None)
+                    .await
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            let value = result.unwrap().unwrap();
+            assert_eq!(value["value"], "done");
+        }
+        assert_eq!(sign_ins.load(Ordering::SeqCst), 1, "单飞锁：并发 401 只重登一次");
+        std::fs::remove_dir_all(root).ok();
     }
 }

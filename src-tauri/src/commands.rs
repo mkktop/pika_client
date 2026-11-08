@@ -1,4 +1,5 @@
 use crate::api::{DownloadTask, PicaClient};
+use crate::credentials;
 use crate::db::Database;
 use crate::download::DownloadManager;
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,20 @@ pub struct AppState {
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
+    /// 记住密码：写入系统凭据库，token 过期时自动重登。缺省视为 true。
+    #[serde(default = "default_true")]
+    pub remember: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuthStatus {
+    pub logged_in: bool,
+    /// 本机保存了密码的账号（系统凭据库可读时才返回）。
+    pub saved_account: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -59,7 +74,62 @@ pub async fn login(state: State<'_, AppState>, req: LoginRequest) -> Result<Stri
         .await
         .map_err(|e| e.to_string())?;
 
+    // 凭据存系统凭据库（非 sqlite 明文）。保存失败不阻断登录，
+    // 设置页的账号状态会如实显示"未保存密码"。
+    if req.remember {
+        // 换账号登录时先清掉上一个账号的本机凭据。
+        clear_saved_credentials(&state, None).await;
+        if credentials::save(&req.email, &req.password).is_ok() {
+            let _ = state.db.set_setting("login_account", &req.email).await;
+            // 同步进内存：本次会话内 token 过期也能立即自动重登，无需重启。
+            state
+                .client
+                .set_credentials(Some((req.email.clone(), req.password)))
+                .await;
+        }
+    } else {
+        clear_saved_credentials(&state, Some(&req.email)).await;
+    }
+
     Ok(token)
+}
+
+/// 清除本机保存的凭据：keyring 条目 + login_account 设置。
+/// `also` 额外清一个账号（登录时换了用户名，旧账号的凭据也要清掉）。
+async fn clear_saved_credentials(state: &State<'_, AppState>, also: Option<&str>) {
+    if let Ok(Some(account)) = state.db.get_setting("login_account").await {
+        let _ = credentials::delete(&account);
+    }
+    if let Some(account) = also {
+        let _ = credentials::delete(account);
+    }
+    let _ = state.db.delete_setting("login_account").await;
+    state.client.set_credentials(None).await;
+}
+
+#[tauri::command]
+pub async fn logout(state: State<'_, AppState>) -> Result<(), String> {
+    state.client.set_token(None).await;
+    state
+        .db
+        .set_setting("token", "")
+        .await
+        .map_err(|e| e.to_string())?;
+    clear_saved_credentials(&state, None).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_auth_status(state: State<'_, AppState>) -> Result<AuthStatus, String> {
+    let logged_in = state.client.is_logged_in().await;
+    let saved_account = match state.db.get_setting("login_account").await {
+        Ok(Some(account)) => credentials::load(&account).ok().flatten().map(|_| account),
+        _ => None,
+    };
+    Ok(AuthStatus {
+        logged_in,
+        saved_account,
+    })
 }
 
 #[tauri::command]
@@ -369,17 +439,20 @@ pub async fn get_latest_comics(
         .map_err(|e| e.to_string())
 }
 
+/// 详情页在线失败时回退本地数据：已下载的漫画离线也能打开详情、进阅读器。
+/// 本地没有记录（纯在线漫画）则原样返回在线错误。
 #[tauri::command]
 pub async fn get_comic_info(
     state: State<'_, AppState>,
     comic_id: String,
 ) -> Result<serde_json::Value, String> {
-    state
-        .client
-        .comic_info(&comic_id)
-        .await
-        .map(|r| serde_json::to_value(r).unwrap())
-        .map_err(|e| e.to_string())
+    match state.client.comic_info(&comic_id).await {
+        Ok(r) => Ok(serde_json::to_value(r).unwrap()),
+        Err(e) => match state.db.local_comic_json(&comic_id).await {
+            Ok(Some(local)) => Ok(local),
+            _ => Err(e.to_string()),
+        },
+    }
 }
 
 #[tauri::command]
@@ -387,12 +460,13 @@ pub async fn get_episodes(
     state: State<'_, AppState>,
     comic_id: String,
 ) -> Result<serde_json::Value, String> {
-    state
-        .client
-        .episodes_all(&comic_id)
-        .await
-        .map(|r| serde_json::to_value(r).unwrap())
-        .map_err(|e| e.to_string())
+    match state.client.episodes_all(&comic_id).await {
+        Ok(r) => Ok(serde_json::to_value(r).unwrap()),
+        Err(e) => match state.db.local_episodes_json(&comic_id).await {
+            Ok(local) if !local.is_empty() => Ok(serde_json::to_value(local).unwrap()),
+            _ => Err(e.to_string()),
+        },
+    }
 }
 
 /// 离线阅读：返回已下载章节的本地图片绝对路径（按页序）。

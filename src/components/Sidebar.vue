@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from '../utils/invoke'
 import { useAppStore } from '../stores/app'
 import { useComicStore } from '../stores/comic'
 import AppIcon from './AppIcon.vue'
@@ -36,7 +36,10 @@ async function punchIn() {
     setTimeout(() => (punchNotice.value = ''), 4000)
   }
 }
-onMounted(() => comics.fetchProfile())
+onMounted(() => {
+  // 未登录时个人资料接口必然失败，等登录成功后再拉。
+  if (app.isLoggedIn) comics.fetchProfile()
+})
 </script>
 <template>
   <aside class="sidebar" :class="{ collapsed: app.sidebarCollapsed }">
@@ -100,7 +103,11 @@ onMounted(() => comics.fetchProfile())
         >
       </button>
     </div>
-    <router-link to="/settings" class="sidebar-profile" title="账号信息"
+    <router-link
+      v-if="app.isLoggedIn"
+      to="/settings"
+      class="sidebar-profile"
+      title="账号信息"
       ><img
         v-if="comics.getAvatarUrl(comics.profile?.avatar)"
         :src="comics.getAvatarUrl(comics.profile?.avatar)"
@@ -111,6 +118,13 @@ onMounted(() => comics.fetchProfile())
         ><small>{{
           comics.profile ? 'Lv.' + comics.profile.level + ' · 哔咔账号' : '欢迎回来'
         }}</small></span
+      ><AppIcon name="chevron-right" :size="15"
+    /></router-link>
+    <router-link v-else to="/login" class="sidebar-profile" title="登录哔咔账号"
+      ><span class="avatar"><AppIcon name="user" :size="19" /></span
+      ><span class="profile-info"
+        ><strong>登录哔咔账号</strong
+        ><small>浏览在线漫画、同步收藏</small></span
       ><AppIcon name="chevron-right" :size="15"
     /></router-link>
   </aside>

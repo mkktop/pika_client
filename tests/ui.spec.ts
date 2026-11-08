@@ -42,6 +42,7 @@ async function fixture(page: Page, loggedIn = true, platform: 'windows' | 'macos
       const state = window as any
       state.__calls = []
       state.__fail = ''
+      state.__authFail = ''
       state.isTauri = true
       state.__windowState = { maximized: false, minimized: false, closed: false }
       state.__updateResult = {
@@ -67,9 +68,14 @@ async function fixture(page: Page, loggedIn = true, platform: 'windows' | 'macos
         invoke: async (cmd: string, args: any = {}) => {
           state.__calls.push({ cmd, args })
           if (state.__fail === cmd) throw '连接暂时不可用，请稍后重试'
+          if (state.__authFail === cmd) throw 'AUTH_REQUIRED:登录已过期，请重新登录'
           switch (cmd) {
             case 'get_app_version':
               return state.__updateResult.current_version
+            case 'get_auth_status':
+              return { logged_in: loggedIn, saved_account: loggedIn ? 'reader@example.com' : null }
+            case 'logout':
+              return null
             case 'check_for_updates':
               if (state.__holdUpdateCheck)
                 await new Promise<void>((resolve) => {
@@ -582,11 +588,57 @@ test('recoverable request failures and login validation', async ({ page }) => {
     .newContext({ viewport: { width: 1280, height: 820 } })
   const login = await context.newPage()
   await fixture(login, false)
-  await login.goto('http://127.0.0.1:1420/')
+  await login.goto('http://127.0.0.1:1420/login')
   await login.getByRole('button', { name: '登录哔咔' }).click()
   await expect(login.getByRole('alert')).toContainText('请输入账号和密码')
   await capture(login, 'login')
   await context.close()
+})
+
+test('logged-out users land in the local library and online pages route to login', async ({
+  page
+}) => {
+  await fixture(page, false)
+  await page.goto('/')
+  await expect(page).toHaveURL(/\/library$/)
+  // 侧边栏未登录态：底部是登录入口。
+  await expect(page.locator('.sidebar-profile')).toContainText('登录哔咔账号')
+  // 在线页面跳登录页（登录页没有侧边栏）。
+  await page.goto('/favorites')
+  await expect(page).toHaveURL(/\/login\?redirect=/)
+  // 登录页保留离线入口，不登录也能看本地书库。
+  await page.getByRole('link', { name: /先逛逛本地书库/ }).click()
+  await expect(page).toHaveURL(/\/library$/)
+  // 未登录同样能进设置页，账号状态给出去登录按钮。
+  await page.goto('/settings')
+  await expect(page.getByRole('button', { name: '去登录' })).toBeVisible()
+})
+
+test('logout from settings returns to the login screen after confirmation', async ({ page }) => {
+  await fixture(page)
+  await page.goto('/settings')
+  await expect(page.locator('.header-note').last()).toContainText('已记住密码')
+  await page.getByRole('button', { name: '退出登录', exact: true }).click()
+  await page.getByRole('button', { name: '再点一次确认退出' }).click()
+  await expect(page).toHaveURL(/\/login/)
+  const logout = await page.evaluate(() =>
+    (window as any).__calls.find((c: any) => c.cmd === 'logout')
+  )
+  expect(logout).toBeTruthy()
+})
+
+test('an expired session routes online pages to the login screen with a notice', async ({
+  page
+}) => {
+  await fixture(page)
+  await page.goto('/')
+  await expect(page.locator('.comic-card').first()).toBeVisible()
+  await page.evaluate(() => {
+    ;(window as any).__authFail = 'get_leaderboard'
+  })
+  await page.getByTitle('刷新内容').click()
+  await expect(page).toHaveURL(/\/login\?expired=1/)
+  await expect(page.getByText(/登录已过期，请重新登录/)).toBeVisible()
 })
 
 test('late responses cannot replace the active page or merge another keyword', async ({ page }) => {
@@ -678,7 +730,7 @@ test('integrated window controls operate without turning form interactions into 
 
 test('login and immersive reading retain accessible window controls', async ({ page }) => {
   await fixture(page, false)
-  await page.goto('/')
+  await page.goto('/login')
   await expect(
     page.locator('.standalone-windowbar').getByRole('button', { name: '关闭窗口' })
   ).toBeVisible()

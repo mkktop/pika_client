@@ -743,6 +743,72 @@ impl Database {
         Ok(())
     }
 
+    pub async fn delete_setting(&self, key: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM settings WHERE key = ?")
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 离线回退：本地已下载漫画的详情，拼成与在线接口同形的 JSON。
+    /// thumb.localPath 指向本地封面文件，前端经 pikaimg://local/ 渲染。
+    /// 本地没有这部漫画时返回 None（调用方继续走在线错误）。
+    pub async fn local_comic_json(&self, comic_id: &str) -> Result<Option<serde_json::Value>, sqlx::Error> {
+        let row: Option<(String, Option<String>, i64, i64, i64, Option<String>, Option<String>)> =
+            sqlx::query_as(
+                "SELECT title, author, finished, pages_count, eps_count, category, cover_path
+                 FROM comics WHERE comic_id = ?",
+            )
+            .bind(comic_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        let Some((title, author, finished, pages_count, eps_count, category, cover_path)) = row
+        else {
+            return Ok(None);
+        };
+        let categories: Vec<&str> = category.as_deref().filter(|c| !c.trim().is_empty()).map(|c| vec![c]).unwrap_or_default();
+        let mut comic = serde_json::json!({
+            "_id": comic_id,
+            "title": title,
+            "author": author.unwrap_or_default(),
+            "finished": finished != 0,
+            "pagesCount": pages_count,
+            "epsCount": eps_count,
+            "categories": categories,
+        });
+        if let Some(cover) = cover_path.filter(|p| !p.trim().is_empty()) {
+            comic["thumb"] = serde_json::json!({
+                "path": "",
+                "fileServer": "",
+                "localPath": cover,
+            });
+        }
+        Ok(Some(comic))
+    }
+
+    /// 离线回退：本地记录的章节列表（含仅部分下载的漫画已下载的那些章节）。
+    pub async fn local_episodes_json(&self, comic_id: &str) -> Result<Vec<serde_json::Value>, sqlx::Error> {
+        let rows: Vec<(i64, String, Option<String>)> = sqlx::query_as(
+            "SELECT episode_order, title, downloaded_at
+             FROM episodes WHERE comic_id = ? ORDER BY episode_order",
+        )
+        .bind(comic_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(order, title, downloaded_at)| {
+                serde_json::json!({
+                    "_id": format!("local-{comic_id}-{order}"),
+                    "title": title,
+                    "order": order,
+                    "updated_at": downloaded_at,
+                })
+            })
+            .collect())
+    }
+
     /// 核对磁盘清理书库：save_path 目录已不存在的完成章节重置为未下载，
     /// 已无任何已下载章节的漫画从书库移除。下载历史（download_history）不受影响。
     pub async fn cleanup_missing_downloads(&self) -> Result<usize, sqlx::Error> {
@@ -924,6 +990,74 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[tokio::test]
+    async fn delete_setting_removes_key_and_is_idempotent() {
+        let root = temp_dir("settings-delete");
+        let db = Database::new(&root.join("test.db").to_string_lossy()).await.unwrap();
+        db.set_setting("login_account", "reader").await.unwrap();
+        assert_eq!(
+            db.get_setting("login_account").await.unwrap().as_deref(),
+            Some("reader")
+        );
+        db.delete_setting("login_account").await.unwrap();
+        assert_eq!(db.get_setting("login_account").await.unwrap(), None);
+        // 删除不存在的 key 不应报错（logout 的重复清理路径依赖这一点）。
+        db.delete_setting("login_account").await.unwrap();
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// 离线回退：本地 comics/episodes 表能拼出与在线接口同形的详情与章节。
+    #[tokio::test]
+    async fn local_fallback_builds_online_shaped_comic_and_episodes() {
+        let root = temp_dir("offline-fallback");
+        let db = Database::new(&root.join("test.db").to_string_lossy()).await.unwrap();
+        sqlx::query(
+            "INSERT INTO comics (comic_id, title, author, finished, pages_count, eps_count, category, cover_path)
+             VALUES ('c1', '测试漫画', '作者甲', 1, 120, 2, '漢化', 'D:/dl/c1/cover.jpg')",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        for (order, title) in [(2i64, "第 2 话"), (1, "第 1 话")] {
+            sqlx::query(
+                "INSERT INTO episodes (comic_id, episode_order, title, downloaded, image_count)
+                 VALUES ('c1', ?, ?, 1, 10)",
+            )
+            .bind(order)
+            .bind(title)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        }
+
+        let comic = db.local_comic_json("c1").await.unwrap().expect("local comic");
+        assert_eq!(comic["_id"], "c1");
+        assert_eq!(comic["title"], "测试漫画");
+        assert_eq!(comic["finished"], true);
+        assert_eq!(comic["epsCount"], 2);
+        assert_eq!(comic["thumb"]["localPath"], "D:/dl/c1/cover.jpg");
+        assert_eq!(comic["categories"].as_array().map(Vec::len), Some(1));
+
+        let episodes = db.local_episodes_json("c1").await.unwrap();
+        assert_eq!(episodes.len(), 2);
+        assert_eq!(episodes[0]["order"], 1, "章节按 order 升序");
+        assert_eq!(episodes[0]["_id"], "local-c1-1");
+        assert_eq!(episodes[1]["title"], "第 2 话");
+
+        // 未下载的漫画不回退（调用方继续走在线错误）。
+        assert!(db.local_comic_json("missing").await.unwrap().is_none());
+        assert!(db.local_episodes_json("missing").await.unwrap().is_empty());
+        // 无封面时不产出 thumb 字段。
+        sqlx::query("UPDATE comics SET cover_path = NULL WHERE comic_id = 'c1'")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let comic = db.local_comic_json("c1").await.unwrap().unwrap();
+        assert!(comic.get("thumb").is_none());
+
+        std::fs::remove_dir_all(root).ok();
     }
 
     /// 删掉本地文件后：章节降级为未下载、漫画移出书库，但下载历史保留。

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from '../utils/invoke'
 import { useComicStore } from './comic'
 import type { Comic } from './comic'
 import {

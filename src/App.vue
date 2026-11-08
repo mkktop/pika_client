@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { onMounted, computed, ref, watch, nextTick } from 'vue'
+import { onMounted, onUnmounted, computed, ref, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from './stores/app'
 import { useComicStore } from './stores/comic'
 import Sidebar from './components/Sidebar.vue'
 import AppIcon from './components/AppIcon.vue'
-import LoginView from './views/LoginView.vue'
 import WindowControls from './components/WindowControls.vue'
 import BrandMark from './components/BrandMark.vue'
 import { desktopWindow, dragWindow, syncWindowTheme } from './utils/desktopWindow'
+import { AUTH_EXPIRED_EVENT } from './utils/invoke'
 const appStore = useAppStore()
 const comicStore = useComicStore()
 const route = useRoute()
@@ -16,13 +16,10 @@ const router = useRouter()
 const ready = ref(false)
 const query = ref('')
 const main = ref<HTMLElement>()
+// 阅读器和登录页都是全屏视图：不显示侧边栏和顶栏。
 const isReader = computed(() => route.name === 'reader')
+const isChromeHidden = computed(() => isReader.value || route.name === 'login')
 const nativeWindow = !!desktopWindow()
-watch(
-  [() => appStore.theme, isReader],
-  ([theme, reader]) => syncWindowTheme(reader ? 'dark' : theme),
-  { immediate: true }
-)
 const pageName = computed(
   () =>
     ({
@@ -35,6 +32,11 @@ const pageName = computed(
       settings: '偏好设置',
       'comic-detail': '漫画详情'
     })[String(route.name)] || '发现'
+)
+watch(
+  [() => appStore.theme, isChromeHidden],
+  ([theme, hidden]) => syncWindowTheme(hidden && !isReader.value ? 'light' : isReader.value ? 'dark' : theme),
+  { immediate: true }
 )
 // 列表页用 keep-alive 缓存；离开时记录滚动位置，返回时恢复而不是重置。
 const LIST_VIEW_NAMES = new Set([
@@ -65,12 +67,20 @@ watch(
 function search() {
   if (query.value.trim()) router.push({ path: '/search', query: { q: query.value.trim() } })
 }
+/** 会话失效：已在在线页面时引导去登录页，本地页面则只更新状态（侧边栏出现登录入口）。 */
+function handleAuthExpired() {
+  appStore.sessionExpired()
+  if (route.meta.requiresAuth) {
+    router.push({ path: '/login', query: { expired: '1', redirect: route.fullPath } })
+  }
+}
 onMounted(async () => {
-  await appStore.checkLogin()
+  window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired)
+  await appStore.loadDownloadDir()
   comicStore.fetchDownloadStates()
   ready.value = true
-  if (appStore.isLoggedIn) await appStore.loadDownloadDir()
 })
+onUnmounted(() => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired))
 </script>
 <template>
   <div
@@ -79,7 +89,7 @@ onMounted(async () => {
     :class="{ 'compact-cards': appStore.compactCards }"
   >
     <header
-      v-if="nativeWindow && (!ready || !appStore.isLoggedIn)"
+      v-if="nativeWindow && (!ready || route.name === 'login')"
       class="standalone-windowbar"
       @mousedown="dragWindow"
     >
@@ -89,14 +99,13 @@ onMounted(async () => {
       <BrandMark /><span class="spinner" />
       <p>正在打开哔咔漫画</p>
     </div>
-    <LoginView v-else-if="!appStore.isLoggedIn" />
     <template v-else>
-      <Sidebar v-if="!isReader" />
+      <Sidebar v-if="!isChromeHidden" />
       <div
         class="workspace"
-        :class="{ collapsed: appStore.sidebarCollapsed, fullscreen: isReader }"
+        :class="{ collapsed: appStore.sidebarCollapsed, fullscreen: isChromeHidden }"
       >
-        <header v-if="!isReader" class="topbar" @mousedown="dragWindow">
+        <header v-if="!isChromeHidden" class="topbar" @mousedown="dragWindow">
           <div class="breadcrumb">
             <span>哔咔漫画</span><AppIcon name="chevron-right" :size="13" /><strong>{{
               pageName
@@ -120,7 +129,7 @@ onMounted(async () => {
           </div>
           <WindowControls />
         </header>
-        <main ref="main" class="main-content" :class="{ fullscreen: isReader }">
+        <main ref="main" class="main-content" :class="{ fullscreen: isChromeHidden }">
           <router-view v-slot="{ Component }"
             ><transition name="fade" mode="out-in"
               ><keep-alive

@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.2.2"
+version = "0.3.0"
 description = "Pika Comic Desktop Client"
 authors = ["you"]
 license = ""
@@ -47,3 +47,6 @@ base64 = "0.22"
 futures = "0.3"
 anyhow = "1"
 thiserror = "2"
+
+# OS credential storage (Windows Credential Manager / macOS Keychain)
+keyring = { version = "3", features = ["windows-native", "apple-native"] }
