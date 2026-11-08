@@ -409,8 +409,11 @@ pub async fn install_update(
     }
     verify_installer(&pending.asset, size, &hex::encode(hash.finalize()))?;
     drop(file);
-    match pending.kind {
-        InstallerKind::Windows if cfg!(target_os = "windows") => {
+    // 注意：分支用 #[cfg] 编译期门控而不是 cfg!() 运行时判断——
+    // CommandExt 等 API 只在对应平台存在，cfg!() 会让所有平台都编译这段代码。
+    let launch = match pending.kind {
+        #[cfg(target_os = "windows")]
+        InstallerKind::Windows => {
             use std::os::windows::process::CommandExt;
             const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
             const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
@@ -429,13 +432,17 @@ pub async fn install_update(
                 .or_else(|_| spawn(0))
                 .map_err(|e| e.to_string())
         }
-        InstallerKind::Macos if cfg!(target_os = "macos") => app
+        #[cfg(not(target_os = "windows"))]
+        InstallerKind::Windows => Err("更新包仅支持 Windows，请前往发布页手动安装".to_string()),
+        #[cfg(target_os = "macos")]
+        InstallerKind::Macos => app
             .opener()
             .open_path(path.to_string_lossy().into_owned(), None::<&str>)
             .map_err(|e| e.to_string()),
-        _ => return Err("安装包与当前系统不匹配，请重新检查更新".to_string()),
-    }
-    .map_err(|_| "无法启动安装程序，请重试或前往发布页手动安装")?;
+        #[cfg(not(target_os = "macos"))]
+        InstallerKind::Macos => Err("更新包仅支持 macOS，请前往发布页手动安装".to_string()),
+    };
+    launch.map_err(|_| "无法启动安装程序，请重试或前往发布页手动安装")?;
     // 给安装向导留出完成初始化的时间，再退出本应用（升级必须先关掉正在运行的 app.exe）。
     tokio::time::sleep(Duration::from_millis(1500)).await;
     app.exit(0);
