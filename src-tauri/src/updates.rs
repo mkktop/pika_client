@@ -3,7 +3,7 @@ use reqwest::{Client, StatusCode};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 use tauri::{Manager, State, ipc::Channel};
 use tauri_plugin_opener::OpenerExt;
 use tokio::{
@@ -12,22 +12,29 @@ use tokio::{
 };
 
 const RELEASES_URL: &str = "https://github.com/mkktop/pika_client/releases";
-const LATEST_RELEASE_API: &str = "https://api.github.com/repos/mkktop/pika_client/releases/latest";
+/// 更新元数据走 release 资产（releases/latest/download/latest.json，对象存储），
+/// 不走 api.github.com —— 后者对匿名请求限 60 次/小时/IP，共享代理出口极易触发 403。
+const UPDATE_MANIFEST_URL: &str =
+    "https://github.com/mkktop/pika_client/releases/latest/download/latest.json";
 const MAX_INSTALLER_SIZE: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
-struct Release {
-    tag_name: String,
+struct UpdateManifest {
+    version: String,
     #[serde(default)]
-    body: Option<String>,
+    notes: Option<String>,
     #[serde(default)]
     published_at: Option<String>,
     #[serde(default)]
-    draft: bool,
-    #[serde(default)]
-    prerelease: bool,
-    #[serde(default)]
-    assets: Vec<Asset>,
+    installers: BTreeMap<String, ManifestInstaller>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ManifestInstaller {
+    name: String,
+    url: String,
+    size: u64,
+    sha256: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -37,6 +44,20 @@ struct Asset {
     size: u64,
     #[serde(default)]
     digest: Option<String>,
+}
+
+/// 清单条目转回既有的 Asset 形态，安装包筛选/信任校验逻辑全部复用。
+fn manifest_assets(manifest: &UpdateManifest) -> Vec<Asset> {
+    manifest
+        .installers
+        .values()
+        .map(|installer| Asset {
+            name: installer.name.clone(),
+            browser_download_url: installer.url.clone(),
+            size: installer.size,
+            digest: Some(format!("sha256:{}", installer.sha256)),
+        })
+        .collect()
 }
 
 #[derive(Debug, Serialize)]
@@ -120,7 +141,7 @@ fn trusted_download(url: &str) -> bool {
             .starts_with("/mkktop/pika_client/releases/download/")
 }
 
-fn installer_for(release: &Release, os: &str, arch: &str) -> Option<(Asset, InstallerKind)> {
+fn installer_for(assets: &[Asset], os: &str, arch: &str) -> Option<(Asset, InstallerKind)> {
     let (suffixes, kind): (&[&str], InstallerKind) = match (os, arch) {
         ("windows", "x86_64") => (&["_x64-setup.exe"], InstallerKind::Windows),
         ("windows", "aarch64") => (&["_arm64-setup.exe"], InstallerKind::Windows),
@@ -129,8 +150,7 @@ fn installer_for(release: &Release, os: &str, arch: &str) -> Option<(Asset, Inst
         _ => return None,
     };
     suffixes.iter().find_map(|suffix| {
-        release
-            .assets
+        assets
             .iter()
             .find(|asset| {
                 asset.name.ends_with(suffix)
@@ -146,7 +166,7 @@ fn installer_for(release: &Release, os: &str, arch: &str) -> Option<(Asset, Inst
 
 fn evaluate_release(
     current: &str,
-    release: Option<Release>,
+    manifest: Option<UpdateManifest>,
     os: &str,
     arch: &str,
 ) -> Result<(UpdateCheck, Option<PendingUpdate>), String> {
@@ -160,24 +180,26 @@ fn evaluate_release(
         download_size: None,
         installer_kind: None,
     };
-    let Some(release) = release else {
+    let Some(manifest) = manifest else {
         return Ok((check, None));
     };
-    let latest = release_version(&release.tag_name)?;
+    let latest = release_version(&manifest.version)?;
     let current = release_version(current)?;
-    if release.draft || release.prerelease || !latest.pre.is_empty() {
+    // releases/latest 只解析已发布的稳定版，这里再拦一道预发布版本号兜底。
+    if !latest.pre.is_empty() {
         return Ok((check, None));
     }
+    let assets = manifest_assets(&manifest);
     check.status = UpdateStatus::Current;
     // Build metadata must not turn the same semantic version into an upgrade.
     if !latest.cmp_precedence(&current).is_gt() {
         return Ok((check, None));
     }
-    let asset = installer_for(&release, os, arch);
+    let asset = installer_for(&assets, os, arch);
     check.status = UpdateStatus::Available;
     check.version = Some(latest.to_string());
-    check.notes = release.body;
-    check.published_at = release.published_at;
+    check.notes = manifest.notes;
+    check.published_at = manifest.published_at;
     check.can_install = asset.is_some();
     check.download_size = asset.as_ref().map(|(asset, _)| asset.size);
     check.installer_kind = asset.as_ref().map(|(_, kind)| *kind);
@@ -226,20 +248,19 @@ pub async fn check_for_updates(
     let proxy = state.client.get_proxy().await;
     let client = http_client(proxy.as_deref(), Duration::from_secs(30))?;
     let response = client
-        .get(LATEST_RELEASE_API)
+        .get(UPDATE_MANIFEST_URL)
         .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
         .send()
         .await
         .map_err(|_| "无法连接 GitHub，请检查网络或代理设置后重试")?;
-    let release = match response.status() {
+    let manifest = match response.status() {
         StatusCode::NOT_FOUND => None,
         StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS => {
             return Err("GitHub 请求受限，请稍后重试或检查代理设置".to_string());
         }
         status if status.is_success() => Some(
             response
-                .json::<Release>()
+                .json::<UpdateManifest>()
                 .await
                 .map_err(|_| "无法读取版本信息，请稍后重试")?,
         ),
@@ -247,7 +268,7 @@ pub async fn check_for_updates(
     };
     let (check, next) = evaluate_release(
         &app.package_info().version.to_string(),
-        release,
+        manifest,
         std::env::consts::OS,
         std::env::consts::ARCH,
     )?;
@@ -460,14 +481,46 @@ pub fn open_update_release(app: tauri::AppHandle) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn release(version: &str) -> Release {
-        serde_json::from_value(serde_json::json!({
-            "tag_name": version, "body": "修复与改进", "assets": [{
-                "name": "Pika Client_0.2.0_x64-setup.exe",
-                "browser_download_url": "https://github.com/mkktop/pika_client/releases/download/v0.2.0/Pika.Client_0.2.0_x64-setup.exe",
-                "size": 3, "digest": format!("sha256:{}", hex::encode(Sha256::digest(b"abc")))
-            }]
-        })).unwrap()
+    /// 与 CI 产物同形：name 带空格，下载 URL 中写作点。
+    fn installer(version: &str, name: &str) -> ManifestInstaller {
+        ManifestInstaller {
+            name: name.to_string(),
+            url: format!(
+                "https://github.com/mkktop/pika_client/releases/download/v{version}/{}",
+                name.replace(' ', ".")
+            ),
+            size: 3,
+            sha256: hex::encode(Sha256::digest(b"abc")),
+        }
+    }
+
+    fn windows_installer(version: &str) -> ManifestInstaller {
+        installer(version, &format!("Pika Client_{version}_x64-setup.exe"))
+    }
+
+    fn manifest(version: &str, installers: Vec<(&str, ManifestInstaller)>) -> UpdateManifest {
+        UpdateManifest {
+            version: version.to_string(),
+            notes: Some("修复与改进".into()),
+            published_at: None,
+            installers: installers
+                .into_iter()
+                .map(|(platform, item)| (platform.to_string(), item))
+                .collect(),
+        }
+    }
+
+    fn windows_manifest(version: &str) -> UpdateManifest {
+        manifest(version, vec![("windows-x64", windows_installer(version))])
+    }
+
+    fn asset_from(item: &ManifestInstaller) -> Asset {
+        Asset {
+            name: item.name.clone(),
+            browser_download_url: item.url.clone(),
+            size: item.size,
+            digest: Some(format!("sha256:{}", item.sha256)),
+        }
     }
 
     #[test]
@@ -480,7 +533,8 @@ mod tests {
             ("0.2.0-rc.1", "V0.2.0", true),
         ] {
             let (check, _) =
-                evaluate_release(current, Some(release(latest)), "windows", "x86_64").unwrap();
+                evaluate_release(current, Some(windows_manifest(latest)), "windows", "x86_64")
+                    .unwrap();
             assert_eq!(
                 matches!(check.status, UpdateStatus::Available),
                 available,
@@ -490,30 +544,38 @@ mod tests {
     }
 
     #[test]
-    fn unpublished_and_prereleases_are_not_upgrades() {
+    fn unpublished_prerelease_and_empty_manifests_are_not_upgrades() {
         let (check, _) = evaluate_release("0.1.0", None, "windows", "x86_64").unwrap();
         assert!(matches!(check.status, UpdateStatus::Unpublished));
-        for variant in ["draft", "prerelease", "semver"] {
-            let mut next = release("v0.2.0");
-            match variant {
-                "draft" => next.draft = true,
-                "prerelease" => next.prerelease = true,
-                _ => next.tag_name = "v0.2.0-rc.1".to_string(),
-            }
-            let (check, pending) =
-                evaluate_release("0.1.0", Some(next), "windows", "x86_64").unwrap();
-            assert!(!check.can_install);
-            assert!(pending.is_none());
-        }
-        assert!(evaluate_release("0.1.0", Some(release("latest")), "windows", "x86_64").is_err());
+        // releases/latest 不会指向预发布版，这里对版本号再兜底一道。
+        let (check, pending) = evaluate_release(
+            "0.1.0",
+            Some(windows_manifest("v0.2.0-rc.1")),
+            "windows",
+            "x86_64",
+        )
+        .unwrap();
+        assert!(!check.can_install);
+        assert!(pending.is_none());
+        // 清单里没有适配当前平台的安装包：版本可识别但不可安装。
+        let (check, pending) =
+            evaluate_release("0.1.0", Some(manifest("v0.2.0", vec![])), "windows", "x86_64")
+                .unwrap();
+        assert!(!check.can_install);
+        assert!(pending.is_none());
+        assert!(
+            evaluate_release("0.1.0", Some(windows_manifest("latest")), "windows", "x86_64")
+                .is_err()
+        );
     }
 
     #[test]
     fn only_selects_matching_platform_and_verifiable_installers() {
-        let next = release("v0.2.0");
-        assert!(installer_for(&next, "windows", "x86_64").is_some());
-        assert!(installer_for(&next, "linux", "x86_64").is_none());
-        assert!(installer_for(&next, "windows", "aarch64").is_none());
+        let next = windows_manifest("v0.2.0");
+        let assets = manifest_assets(&next);
+        assert!(installer_for(&assets, "windows", "x86_64").is_some());
+        assert!(installer_for(&assets, "linux", "x86_64").is_none());
+        assert!(installer_for(&assets, "windows", "aarch64").is_none());
         for variant in [
             "missing_digest",
             "bad_digest",
@@ -522,19 +584,19 @@ mod tests {
             "empty",
             "wrong_extension",
         ] {
-            let mut next = release("v0.2.0");
-            let asset = &mut next.assets[0];
+            let mut item = windows_installer("0.2.0");
             match variant {
-                "missing_digest" => asset.digest = None,
-                "bad_digest" => asset.digest = Some("sha256:abc".to_string()),
+                "missing_digest" => item.sha256 = String::new(),
+                "bad_digest" => item.sha256 = "abc".to_string(),
                 "other_repo" => {
-                    asset.browser_download_url =
+                    item.url =
                         "https://github.com/other/repo/releases/download/v1/app.exe".to_string()
                 }
-                "oversize" => asset.size = MAX_INSTALLER_SIZE + 1,
-                "empty" => asset.size = 0,
-                _ => asset.name = "app.zip".to_string(),
+                "oversize" => item.size = MAX_INSTALLER_SIZE + 1,
+                "empty" => item.size = 0,
+                _ => item.name = "app.zip".to_string(),
             }
+            let next = manifest("v0.2.0", vec![("windows-x64", item)]);
             let (check, pending) =
                 evaluate_release("0.1.0", Some(next), "windows", "x86_64").unwrap();
             assert!(matches!(check.status, UpdateStatus::Available));
@@ -545,37 +607,39 @@ mod tests {
 
     #[test]
     fn mac_updates_select_universal_or_matching_architecture_dmg() {
-        let mut next = release("v0.2.0");
-        let mut universal = next.assets[0].clone();
-        universal.name = "Pika Client_0.2.0_universal.dmg".to_string();
-        universal.browser_download_url = "https://github.com/mkktop/pika_client/releases/download/v0.2.0/Pika.Client_0.2.0_universal.dmg".to_string();
-        next.assets.push(universal.clone());
+        let universal = installer("0.2.0", "Pika Client_0.2.0_universal.dmg");
+        let only_universal = manifest("v0.2.0", vec![("macos-universal", universal.clone())]);
+        let assets = manifest_assets(&only_universal);
         for arch in ["aarch64", "x86_64"] {
-            let (asset, kind) = installer_for(&next, "macos", arch).unwrap();
+            let (asset, kind) = installer_for(&assets, "macos", arch).unwrap();
             assert_eq!(asset.name, universal.name);
             assert_eq!(kind, InstallerKind::Macos);
             assert_eq!(kind.extension(), "dmg");
         }
-        assert_eq!(
-            installer_for(&next, "windows", "x86_64").unwrap().1,
-            InstallerKind::Windows
+        assert!(installer_for(&assets, "windows", "x86_64").is_none());
+        assert!(installer_for(&assets, "macos", "x86").is_none());
+        let intel = installer("0.2.0", "Pika Client_0.2.0_x64.dmg");
+        let with_intel = manifest(
+            "v0.2.0",
+            vec![
+                ("macos-universal", universal.clone()),
+                ("macos-intel", intel.clone()),
+            ],
         );
-        assert!(installer_for(&next, "macos", "x86").is_none());
-        let mut intel = universal;
-        intel.name = "Pika Client_0.2.0_x64.dmg".to_string();
-        next.assets.push(intel.clone());
-        assert_eq!(
-            installer_for(&next, "macos", "x86_64").unwrap().0.name,
-            intel.name
-        );
+        let assets = manifest_assets(&with_intel);
         assert!(
-            installer_for(&next, "macos", "aarch64")
+            installer_for(&assets, "macos", "aarch64")
                 .unwrap()
                 .0
                 .name
                 .ends_with("_universal.dmg")
         );
-        let (check, pending) = evaluate_release("0.1.0", Some(next), "macos", "aarch64").unwrap();
+        assert_eq!(
+            installer_for(&assets, "macos", "x86_64").unwrap().0.name,
+            intel.name
+        );
+        let (check, pending) =
+            evaluate_release("0.1.0", Some(with_intel), "macos", "aarch64").unwrap();
         assert!(check.can_install);
         assert_eq!(check.installer_kind, Some(InstallerKind::Macos));
         assert!(pending.is_some());
@@ -583,21 +647,60 @@ mod tests {
 
     #[test]
     fn arm64_only_mac_release_is_selected_for_apple_silicon() {
-        let mut next = release("v0.2.2");
-        let mut arm = next.assets[0].clone();
-        arm.name = "Pika Client_0.2.2_aarch64.dmg".to_string();
-        arm.browser_download_url = "https://github.com/mkktop/pika_client/releases/download/v0.2.2/Pika.Client_0.2.2_aarch64.dmg".to_string();
-        next.assets.push(arm.clone());
+        let arm = installer("0.2.2", "Pika Client_0.2.2_aarch64.dmg");
+        let next = manifest(
+            "v0.2.2",
+            vec![
+                ("windows-x64", windows_installer("0.2.2")),
+                ("macos-arm64", arm.clone()),
+            ],
+        );
         assert_eq!(
-            installer_for(&next, "macos", "aarch64").unwrap().0.name,
+            installer_for(&manifest_assets(&next), "macos", "aarch64")
+                .unwrap()
+                .0
+                .name,
             arm.name
         );
-        assert!(installer_for(&next, "macos", "x86_64").is_none());
-        assert!(installer_for(&next, "windows", "x86_64").is_some());
+        assert!(installer_for(&manifest_assets(&next), "macos", "x86_64").is_none());
+        assert!(installer_for(&manifest_assets(&next), "windows", "x86_64").is_some());
         let (check, pending) = evaluate_release("0.2.1", Some(next), "macos", "aarch64").unwrap();
         assert!(check.can_install);
         assert_eq!(check.installer_kind, Some(InstallerKind::Macos));
         assert_eq!(pending.unwrap().asset.name, arm.name);
+    }
+
+    /// 与 scripts/release-artifacts.cjs 生成的 latest.json 字段一一对应，
+    /// 防止 CI 产物与应用解析器悄悄脱节。
+    #[test]
+    fn parses_the_ci_manifest_shape() {
+        let manifest: UpdateManifest = serde_json::from_value(serde_json::json!({
+            "version": "0.4.1",
+            "notes": "Windows x64 与 macOS ARM64 安装包。",
+            "published_at": "2026-11-11T14:30:00.000Z",
+            "installers": {
+                "windows-x64": {
+                    "name": "Pika.Client_0.4.1_x64-setup.exe",
+                    "url": "https://github.com/mkktop/pika_client/releases/download/v0.4.1/Pika.Client_0.4.1_x64-setup.exe",
+                    "size": 3,
+                    "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+                },
+                "macos-arm64": {
+                    "name": "Pika.Client_0.4.1_aarch64.dmg",
+                    "url": "https://github.com/mkktop/pika_client/releases/download/v0.4.1/Pika.Client_0.4.1_aarch64.dmg",
+                    "size": 3,
+                    "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+                }
+            }
+        }))
+        .unwrap();
+        let (check, pending) = evaluate_release("0.4.0", Some(manifest), "windows", "x86_64").unwrap();
+        assert_eq!(check.version.as_deref(), Some("0.4.1"));
+        assert!(check.can_install);
+        assert_eq!(check.notes.as_deref(), Some("Windows x64 与 macOS ARM64 安装包。"));
+        let pending = pending.unwrap();
+        assert_eq!(pending.kind, InstallerKind::Windows);
+        assert_eq!(pending.asset.name, "Pika.Client_0.4.1_x64-setup.exe");
     }
 
     #[test]
@@ -615,11 +718,11 @@ mod tests {
 
     #[test]
     fn rejects_truncated_or_modified_installers() {
-        let asset = &release("v0.2.0").assets[0];
+        let asset = asset_from(&windows_installer("0.2.0"));
         let correct = hex::encode(Sha256::digest(b"abc"));
-        assert!(verify_installer(asset, 3, &correct).is_ok());
-        assert!(verify_installer(asset, 2, &correct).is_err());
-        assert!(verify_installer(asset, 3, &hex::encode(Sha256::digest(b"abd"))).is_err());
+        assert!(verify_installer(&asset, 3, &correct).is_ok());
+        assert!(verify_installer(&asset, 2, &correct).is_err());
+        assert!(verify_installer(&asset, 3, &hex::encode(Sha256::digest(b"abd"))).is_err());
     }
 
     #[tokio::test]
@@ -642,7 +745,7 @@ mod tests {
                 socket.write_all(header.as_bytes()).await.unwrap();
                 socket.write_all(body).await.unwrap();
             });
-            let mut asset = release("v0.2.0").assets.remove(0);
+            let mut asset = asset_from(&windows_installer("0.2.0"));
             asset.browser_download_url = format!("http://{address}/installer");
             // Local test traffic only; production requests always use http_client's HTTPS policy.
             let client = Client::builder().no_proxy().build().unwrap();

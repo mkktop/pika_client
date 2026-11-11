@@ -67,7 +67,7 @@ impl PicaClient {
 
     #[cfg(test)]
     fn with_api_base(db: Arc<Database>, api_base: &str) -> Self {
-        let mut client = Self {
+        let client = Self {
             api_base: api_base.to_string(),
             ..Self::new(db)
         };

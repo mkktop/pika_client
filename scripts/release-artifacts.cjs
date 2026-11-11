@@ -77,7 +77,7 @@ async function uploadInstallers({ github, context, core, tag, directory, platfor
     ) {
       throw new Error(`Installer checksum or format mismatch: ${platform}`)
     }
-    return { name: manifest.filename, suffix: suffixes[platform], data, digest }
+    return { platform, name: manifest.filename, suffix: suffixes[platform], data, digest }
   })
   const { data: releases } = await github.rest.repos.listReleases({
     ...context.repo,
@@ -118,6 +118,41 @@ async function uploadInstallers({ github, context, core, tag, directory, platfor
     }
     core.info(`${installer.name}: ${installer.data.length} bytes, ${installer.digest}`)
   }
+  // 更新清单随安装包一起上传：应用改从 releases/latest/download/latest.json 读取
+  // 版本元数据，绕开 api.github.com 每 IP 每小时 60 次的匿名限流。
+  const manifestData = Buffer.from(
+    JSON.stringify(
+      {
+        version,
+        notes: release.body || '',
+        published_at: new Date().toISOString(),
+        installers: Object.fromEntries(
+          installers.map((installer) => [
+            installer.platform,
+            {
+              name: installer.name,
+              url: `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}/${installer.name}`,
+              size: installer.data.length,
+              sha256: installer.digest.slice('sha256:'.length)
+            }
+          ])
+        )
+      },
+      null,
+      2
+    ) + '\n'
+  )
+  // manifest 内容含发布时间，重跑不会逐字节一致，草稿上直接重传。
+  for (const asset of release.assets.filter((asset) => asset.name === 'latest.json')) {
+    await github.rest.repos.deleteReleaseAsset({ ...context.repo, asset_id: asset.id })
+  }
+  await github.rest.repos.uploadReleaseAsset({
+    ...context.repo,
+    release_id: release.id,
+    name: 'latest.json',
+    data: manifestData,
+    headers: { 'content-type': 'application/json' }
+  })
   core.info(`Verified installers uploaded to Release draft ${release.id}`)
 }
 
