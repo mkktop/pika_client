@@ -131,7 +131,7 @@ async function uploadInstallers({ github, context, core, tag, directory, platfor
             installer.platform,
             {
               name: installer.name,
-              url: `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}/${installer.name}`,
+              url: `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}/${encodeURIComponent(installer.name)}`,
               size: installer.data.length,
               sha256: installer.digest.slice('sha256:'.length)
             }
