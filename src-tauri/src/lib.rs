@@ -382,6 +382,7 @@ pub fn run() {
             toggle_favourite,
             get_my_favourites,
             start_download,
+            retry_download_task,
             get_downloaded_episode_orders,
             get_download_history,
             get_download_state_sets,

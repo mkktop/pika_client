@@ -834,6 +834,18 @@
   color: var(--error);
   background: #cf5b5512;
 }
+.task-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+}
+.task-retry {
+  font-size: 10px;
+  gap: 4px;
+  color: var(--error);
+}
 /* Settings */
 .settings-layout {
   display: grid;

@@ -1,8 +1,42 @@
 use crate::api::PicaClient;
 use crate::db::Database;
+use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Semaphore;
+
+/// 瞬时网络错误自动重试：首次失败后最多再试 MAX_RETRIES 次，指数退避。
+const MAX_RETRIES: u32 = 3;
+const RETRY_BACKOFF_BASE: Duration = Duration::from_millis(1000);
+
+/// 网络抖动重试：失败后按 base * 2^attempt 退避重试，最后一次仍失败则返回原错误。
+/// 只在下载管理器层使用，浏览等其它请求路径不受影响。
+async fn with_retry<T, E, Fut, F>(mut f: F) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    for attempt in 0..=MAX_RETRIES {
+        match f().await {
+            Ok(v) => return Ok(v),
+            Err(e) if attempt < MAX_RETRIES => {
+                let delay = RETRY_BACKOFF_BASE * (1u32 << attempt);
+                log::warn!(
+                    "Download request failed (attempt {}/{}), retrying in {:?}: {}",
+                    attempt + 1,
+                    MAX_RETRIES + 1,
+                    delay,
+                    e
+                );
+                tokio::time::sleep(delay).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("loop returns on every branch")
+}
 
 pub struct DownloadManager {
     semaphore: Arc<Semaphore>,
@@ -40,8 +74,8 @@ impl DownloadManager {
             .save_episode(&comic_id, episode_order, &episode_title)
             .await;
 
-        // Fetch all picture metadata
-        let pictures = match client.pictures_all(&comic_id, episode_order).await {
+        // Fetch all picture metadata (失败自动重试，吸收瞬时网络错误)
+        let pictures = match with_retry(|| client.pictures_all(&comic_id, episode_order)).await {
             Ok(p) => p,
             Err(e) => {
                 let _ = db
@@ -99,7 +133,7 @@ impl DownloadManager {
                     return Ok(());
                 }
 
-                let data = client.download_image(&url).await?;
+                let data = with_retry(|| client.download_image(&url)).await?;
                 std::fs::write(&path, &data)?;
                 Ok::<_, anyhow::Error>(())
             });
@@ -176,4 +210,50 @@ fn sanitize_filename(name: &str) -> String {
     }
     result = result.replace(' ', "");
     result.chars().take(255).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// 前 N 次失败、之后成功：with_retry 应自动重试直至成功。
+    #[tokio::test]
+    async fn retries_until_success() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let result: Result<&str, String> = with_retry(move || {
+            let counter = counter.clone();
+            async move {
+                let n = counter.fetch_add(1, Ordering::SeqCst);
+                if n < 2 {
+                    Err("transient".to_string())
+                } else {
+                    Ok("done")
+                }
+            }
+        })
+        .await;
+
+        assert_eq!(result.unwrap(), "done");
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    /// 超过最大重试次数仍失败：返回最后一次的错误，共尝试 MAX_RETRIES + 1 次。
+    #[tokio::test]
+    async fn gives_up_after_max_retries() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let result: Result<(), String> = with_retry(move || {
+            let counter = counter.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Err::<(), _>("permanent".to_string())
+            }
+        })
+        .await;
+
+        assert_eq!(result.unwrap_err(), "permanent");
+        assert_eq!(calls.load(Ordering::SeqCst), (MAX_RETRIES + 1) as usize);
+    }
 }

@@ -915,6 +915,23 @@ impl Database {
         Ok(result.rows_affected() as usize)
     }
 
+    pub async fn get_download_task(&self, id: &str) -> Result<Option<crate::api::DownloadTask>, sqlx::Error> {
+        let row = sqlx::query("SELECT * FROM download_queue WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.as_ref().map(row_to_task))
+    }
+
+    /// 删除单条任务记录。只动 download_queue 表，不影响本地文件。
+    pub async fn delete_download_task(&self, id: &str) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM download_queue WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// 卡片级下载状态：历史里出现过的漫画 ID + 本地仍有文件的漫画 ID。
     pub async fn get_download_state_sets(&self) -> Result<(Vec<String>, Vec<String>), sqlx::Error> {
         let history = sqlx::query_as::<_, (String,)>("SELECT comic_id FROM download_history")
@@ -971,6 +988,7 @@ fn row_to_task(r: &sqlx::sqlite::SqliteRow) -> crate::api::DownloadTask {
         total_images: r.get("total_images"),
         downloaded_images: r.get("downloaded_images"),
         save_path: r.get::<Option<String>, _>("save_path").unwrap_or_default(),
+        error: r.get("error"),
         created_at: r.get("created_at"),
     }
 }

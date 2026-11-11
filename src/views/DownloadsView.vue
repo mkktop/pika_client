@@ -9,11 +9,13 @@ interface DownloadTask {
   id: string
   comic_id: string
   comic_title: string
+  episode_id: string
   episode_title: string
   status: string
   total_images: number
   downloaded_images: number
   save_path: string
+  error?: string | null
 }
 interface HistoryEntry {
   comic_id: string
@@ -80,6 +82,20 @@ async function clearFinished() {
     // 清理失败时保持列表原样，下次刷新重试
   } finally {
     clearing.value = false
+  }
+}
+// 失败任务一键重试：后端复用章节信息重新入队，磁盘上已有的图片会跳过（断点续传）。
+const retrying = ref<string[]>([])
+async function retryTask(task: DownloadTask) {
+  if (retrying.value.includes(task.id)) return
+  retrying.value.push(task.id)
+  try {
+    await invoke('retry_download_task', { taskId: task.id })
+    await loadTasks()
+  } catch {
+    // 重试失败保持原任务行，3 秒轮询会刷新状态
+  } finally {
+    retrying.value = retrying.value.filter((id) => id !== task.id)
   }
 }
 const historyDate = (iso?: string | null) => (iso ? iso.slice(0, 10) : '')
@@ -241,7 +257,22 @@ onDeactivated(() => clearInterval(timer))
               ><span>{{ progress(task) }}%</span>
             </div>
           </div>
-          <span class="task-status" :class="task.status">{{ statusText(task.status) }}</span>
+          <div class="task-actions">
+            <span class="task-status" :class="task.status" :title="task.error || undefined">{{
+              statusText(task.status)
+            }}</span>
+            <button
+              v-if="task.status === 'failed'"
+              class="text-btn task-retry"
+              :disabled="retrying.includes(task.id)"
+              :title="task.error ? task.error + '，点击重试' : '重新下载缺失的图片'"
+              @click="retryTask(task)"
+            >
+              <AppIcon name="refresh" :size="13" />{{
+                retrying.includes(task.id) ? '重试中…' : '重试'
+              }}</button
+            >
+          </div>
         </article>
       </div></template
     >

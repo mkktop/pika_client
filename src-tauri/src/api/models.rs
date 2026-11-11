@@ -406,6 +406,8 @@ pub struct DownloadTask {
     pub total_images: i64,
     pub downloaded_images: i64,
     pub save_path: String,
+    /// 失败原因（如 "35/40 images downloaded"），仅 failed 任务有值。
+    pub error: Option<String>,
     pub created_at: String,
 }
 

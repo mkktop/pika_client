@@ -709,10 +709,8 @@ pub async fn import_download_history(
 }
 
 #[tauri::command]
-pub async fn start_download(
-    state: State<'_, AppState>,
-    req: DownloadRequest,
-) -> Result<String, String> {
+/// 入队一章下载：建任务记录并 spawn 下载。start_download 与失败重试共用。
+async fn enqueue_download(state: &AppState, req: DownloadRequest) -> Result<String, String> {
     let download_dir = state.download_dir.read().await.clone();
     let task_id = uuid::Uuid::new_v4().to_string();
 
@@ -726,6 +724,7 @@ pub async fn start_download(
         total_images: 0,
         downloaded_images: 0,
         save_path: download_dir.clone(),
+        error: None,
         created_at: chrono::Utc::now().to_rfc3339(),
     };
 
@@ -754,6 +753,50 @@ pub async fn start_download(
     });
 
     Ok(task.id)
+}
+
+#[tauri::command]
+pub async fn start_download(
+    state: State<'_, AppState>,
+    req: DownloadRequest,
+) -> Result<String, String> {
+    enqueue_download(&state, req).await
+}
+
+/// 失败任务一键重试：复用旧任务的章节信息重新入队（磁盘上已有的图片会跳过，
+/// 等于断点续传只补缺的图），随后删掉旧的失败记录。
+#[tauri::command]
+pub async fn retry_download_task(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<String, String> {
+    let old = state
+        .db
+        .get_download_task(&task_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "任务不存在")?;
+    if old.status != "failed" {
+        return Err("只能重试失败的任务".into());
+    }
+    let episode_order: i64 = old
+        .episode_id
+        .parse()
+        .map_err(|_| "任务数据异常：章节序号无法解析")?;
+
+    let new_id = enqueue_download(
+        &state,
+        DownloadRequest {
+            comic_id: old.comic_id,
+            comic_title: old.comic_title,
+            episode_order,
+            episode_title: old.episode_title,
+        },
+    )
+    .await?;
+
+    let _ = state.db.delete_download_task(&task_id).await;
+    Ok(new_id)
 }
 
 #[tauri::command]
