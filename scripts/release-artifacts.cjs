@@ -107,16 +107,19 @@ async function uploadInstallers({ github, context, core, tag, directory, platfor
       ) {
         throw new Error('Release draft contains a different installer')
       }
+      // GitHub 会把资产名里的空格清洗成点，规范名以服务器返回为准。
+      installer.uploadedName = existing[0].name
     } else {
-      await github.rest.repos.uploadReleaseAsset({
+      const upload = await github.rest.repos.uploadReleaseAsset({
         ...context.repo,
         release_id: release.id,
         name: installer.name,
         data: installer.data,
         headers: { 'content-type': 'application/octet-stream' }
       })
+      installer.uploadedName = upload.data.name
     }
-    core.info(`${installer.name}: ${installer.data.length} bytes, ${installer.digest}`)
+    core.info(`${installer.uploadedName}: ${installer.data.length} bytes, ${installer.digest}`)
   }
   // 更新清单随安装包一起上传：应用改从 releases/latest/download/latest.json 读取
   // 版本元数据，绕开 api.github.com 每 IP 每小时 60 次的匿名限流。
@@ -130,8 +133,8 @@ async function uploadInstallers({ github, context, core, tag, directory, platfor
           installers.map((installer) => [
             installer.platform,
             {
-              name: installer.name,
-              url: `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}/${encodeURIComponent(installer.name)}`,
+              name: installer.uploadedName,
+              url: `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}/${encodeURIComponent(installer.uploadedName)}`,
               size: installer.data.length,
               sha256: installer.digest.slice('sha256:'.length)
             }
